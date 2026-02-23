@@ -1,0 +1,33 @@
+# Configs for experiments
+seed: 42
+device: null  # "mps", "cuda", or "cpu"; null = auto (mps if available else cpu)
+
+# Pipeline: seed_pivots (~50) → model generates more → verifier filters → fine-tune on verified set
+data:
+  seed_pivots_path: "data/seed_pivots.jsonl"   # ~50 initial safe pivot examples (prompt, response)
+  constitution_path: null                       # path to constitution(s)
+  prompt_source: null                           # optional: path or HF dataset for prompts to feed generator 
+  verified_path: "results/verified_data.jsonl"  # output of generate+verify
+  max_length: 512
+  val_ratio: 0.2
+
+model:
+  generator_name: "distilgpt2"     # Change to Gemma for final model
+  verifier_name: "distilgpt2"      # keep same for main comparison
+
+train:
+  batch_size: 4
+  learning_rate: 2e-5
+  num_epochs: 3
+  output_dir: "results/checkpoints"
+
+generation:
+  num_candidates_per_seed: 3
+  max_new_tokens: 160  
+  temperature: 0.6     # lower temp improves JSON validity while preserving some diversity
+  top_p: 0.9
+  allow_unstructured_fallback: true  # dev mode fallback when model does not emit valid JSON
+  generated_candidates_path: "results/generated_candidates.jsonl"
+
+eval:
+  output_dir: "results/predictions"

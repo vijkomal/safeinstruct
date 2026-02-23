@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual/env
+.venv/
+venv/
+env/
+.env
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Logs / runtime
+*.log
+*.tmp
+
+# Model/cache artifacts
+*.safetensors
+*.bin
+*.pt
+*.ckpt
+cache/
+.cache/
+
+# Hugging Face local cache helpers (if created in repo)
+huggingface/
+hf_cache/
+
+# Training outputs / generated data
+results/checkpoints/
+results/predictions/
+results/generated_candidates.jsonl
+results/verified_data.jsonl

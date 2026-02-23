@@ -1,0 +1,19 @@
+name: safeinstruct
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pytorch
+  - torchvision
+  - torchaudio
+  - pip
+  - pip:
+    - transformers>=4.36
+    - huggingface_hub>=0.20
+    - datasets>=2.16
+    - accelerate>=0.25
+    - pyyaml
+    - tqdm
+    - scikit-learn
