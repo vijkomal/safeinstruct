@@ -101,7 +101,8 @@ def main() -> None:
     max_new_tokens = int(eval_cfg.get("max_new_tokens", 96))
     output_path = str(ROOT / eval_cfg.get("output_path", "results/eval_outputs.jsonl"))
 
-    seed_rows = read_jsonl(str(ROOT / config["data"]["seed_pivots_path"]))
+    from src.data import load_seed_examples
+    seed_rows = load_seed_examples(config)
     prompts = [r["prompt"] for r in seed_rows if isinstance(r.get("prompt"), str)]
     prompts = prompts[: max(1, min(num_samples, len(prompts)))]
     if not prompts:

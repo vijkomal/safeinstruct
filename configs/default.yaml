@@ -2,7 +2,9 @@ seed: 42
 device: null  # "cuda" | "cpu" | null (auto prefers cuda if available, else cpu)
 
 data:
-  seed_pivots_path: "data/seed_pivots.jsonl"
+  # Seed sources (merged at load time). Manual seeds are in git; HarmfulQA is regenerable.
+  seeds_manual_path: "data/seeds_manual.jsonl"
+  seeds_harmfulqa_path: "data/seeds_harmfulqa.jsonl"
   # prompt_source: "hf://declare-lab/HarmfulQA:train"  # null for no external prompts
   prompt_source: null
   verified_path: "results/verified_data.jsonl"

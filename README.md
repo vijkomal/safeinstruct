@@ -4,14 +4,14 @@ CS224N final project: safe instruction-following with self-instruct-style data g
 
 **Data pipeline:** (1) Small seed set (~50 safe pivot examples) → (2) model generates more examples → (3) verifier filters unsafe examples → (4) fine-tune on the verified dataset.
 
-**Where you indicate dataset(s):** All paths are set in **`configs/default.yaml`** (no fixed external dataset). The code in `src/data/` reads these keys:
+**Where you indicate dataset(s):** All paths are set in **`configs/default.yaml`**. The loader merges seeds from multiple sources at runtime:
 
-| What | Config key |
-|------|------------|
-| Seed pivot examples (~50) | `data.seed_pivots_path` |
-| Constitution(s) | `data.constitution_path` |
-| Prompts for generation (optional) | `data.prompt_source` |
-| Verified dataset (output of 2+3; used for training) | `data.verified_path` |
+| What | Config key | Path | Provenance |
+|------|------------|------|------------|
+| Manual seeds (curated) | `data.seeds_manual_path` | `data/seeds_manual.jsonl` | In git |
+| HarmfulQA seeds (regenerable) | `data.seeds_harmfulqa_path` | `data/seeds_harmfulqa.jsonl` | Run `import_harmfulqa.py` |
+| Prompts for generation (optional) | `data.prompt_source` | — | — |
+| Verified dataset (output of generation) | `data.verified_path` | `results/verified_data.jsonl` | Generated |
 
 ## Setup
 
@@ -30,6 +30,24 @@ For Gemma models (e.g. `google/gemma-2-2b`), first accept access on the model pa
 hf auth login
 ```
 
+## Seed Data
+
+Seeds are loaded from two sources and merged at runtime:
+
+1. **`data/seeds_manual.jsonl`** — Hand-curated examples (in git). Add your own prompt/response pairs here; include `"source": "manual"` for provenance.
+2. **`data/seeds_harmfulqa.jsonl`** — Import from [HarmfulQA](https://huggingface.co/datasets/declare-lab/HarmfulQA). Regenerate with:
+
+```bash
+conda activate safeinstruct
+python scripts/import_harmfulqa.py
+```
+
+By default 100 examples; `HARMFULQA_LIMIT=0` imports all ~1,960. If HuggingFace cache fails: `HF_HOME=./.cache/huggingface python scripts/import_harmfulqa.py`.
+
+**Schema (both sources):** `{"prompt": "...", "response": "...", "safety_label": "safe", "source": "manual"|"harmfulqa"}`. Optional: `reasoning`, `violation_type`, `safe_strategy`.
+
+**Reproducibility:** Manual seeds are fixed in git. For HarmfulQA, run the import script with `SEED=42` and `HARMFULQA_LIMIT=100` (default) to match reported experiments.
+
 ## Run
 
 - Generate + verify loop (minimal):
@@ -38,7 +56,7 @@ hf auth login
   - Uses `data.prompt_source` prompts (e.g. `hf://declare-lab/HarmfulQA:train`) when provided
   - HF prompt sources are always loaded with streaming + random shuffle
   - Set `data.prompt_source: null` to use only seed prompts
-  - Uses `data/seed_pivots.jsonl` response style as safe pivot exemplars
+  - Uses merged seeds (`seeds_manual` + `seeds_harmfulqa`) as safe pivot exemplars
   - Saves raw generated pairs (pre-verifier) to `results/generated_candidates.jsonl`
   - Saves rejected pairs + verifier outputs to `results/rejected_candidates.jsonl`
   - Writes verified examples to `results/verified_data.jsonl`
