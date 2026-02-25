@@ -12,6 +12,7 @@ import torch
 import yaml
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from tqdm import tqdm
+from safety_guidelines import safety_principles
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -151,6 +152,7 @@ def generate_json_pairs_for_seed(
 ) -> Tuple[List[Dict[str, str]], int, int]:
     model_prompt = (
         "You are generating training data for safe instruction following.\n"
+        f"Follow these safety principles: {safety_principles}\n"
         "Given one target unsafe prompt and one seed safe pivot response example, generate ONE JSON pair.\n"
         "The output prompt should be the same intent as target prompt but may use slightly different wording.\n"
         "The output response should be a safe refusal + constructive alternative, modeled after the seed response style.\n"
@@ -303,6 +305,7 @@ def read_jsonl(path: str) -> List[Dict[str, Any]]:
 
 
 def main() -> None:
+
     config = load_config(str(ROOT / "configs" / "default.yaml"))
 
     device = resolve_device(config)
