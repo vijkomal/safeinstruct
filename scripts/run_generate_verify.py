@@ -13,7 +13,7 @@ import torch
 import yaml
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from tqdm import tqdm
-from data/safety_guidelines import safety_principles
+from data.safety_guidelines import safety_principles
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
