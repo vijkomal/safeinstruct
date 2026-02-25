@@ -36,5 +36,4 @@ eval:
   num_samples: 10
   max_new_tokens: 96
   output_path: "results/eval_outputs.jsonl"
-  summary_path: "results/eval_summary.json"
   # model_path: "results/checkpoints/generator_single_layer_ft"  # optional explicit override
