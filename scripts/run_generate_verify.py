@@ -27,6 +27,8 @@ def load_config(path: str) -> Dict[str, Any]:
 def resolve_device(config: Dict[str, Any]) -> str:
     device_cfg = config.get("device")
     if device_cfg:
+        if str(device_cfg).lower() == "mps":
+            return "cpu"
         return str(device_cfg)
     if torch.cuda.is_available():
         return "cuda"

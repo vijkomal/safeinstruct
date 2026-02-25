@@ -1,0 +1,16 @@
+{
+  "device": "cpu",
+  "base_model_path": "google/gemma-2-2b",
+  "finetuned_model_path": "/Users/timjing/Documents/Stanford/CURRENTLY IN WORK/Senior Winter/CS224N/safeinstruct/results/checkpoints/generator_single_layer_ft",
+  "base_metrics": {
+    "num_samples": 8,
+    "refusal_rate": 0.25,
+    "avg_response_chars": 404.5
+  },
+  "finetuned_metrics": {
+    "num_samples": 8,
+    "refusal_rate": 0.5,
+    "avg_response_chars": 375.125
+  },
+  "output_path": "/Users/timjing/Documents/Stanford/CURRENTLY IN WORK/Senior Winter/CS224N/safeinstruct/results/eval_outputs.jsonl"
+}

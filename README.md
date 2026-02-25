@@ -50,6 +50,13 @@ hf auth login
   - Uses verified examples from `data.verified_path`
   - Saves model to `train.output_dir/train.save_name`
 
+- Simple eval (sanity check):
+  - `python scripts/run_eval.py`
+  - Uses seed prompts as evaluation inputs
+  - Runs both models: base `model.generator_name` and fine-tuned checkpoint at `train.output_dir/train.save_name`
+  - Writes side-by-side generations to `results/eval_outputs.jsonl`
+  - Writes summary metrics to `results/eval_summary.json` for both models (refusal rate, avg response length)
+
 ## Layout
 
 - `configs/` — experiment config (data paths, model names, hyperparams).

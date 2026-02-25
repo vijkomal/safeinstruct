@@ -1,5 +1,5 @@
 seed: 42
-device: null  # "mps" | "cuda" | "cpu" | null(auto)
+device: null  # "cuda" | "cpu" | null (auto prefers cuda if available, else cpu)
 
 data:
   seed_pivots_path: "data/seed_pivots.jsonl"
@@ -31,3 +31,10 @@ generation:
   external_prompt_limit: 50
   generated_candidates_path: "results/generated_candidates.jsonl"
   rejected_candidates_path: "results/rejected_candidates.jsonl"
+
+eval:
+  num_samples: 10
+  max_new_tokens: 96
+  output_path: "results/eval_outputs.jsonl"
+  summary_path: "results/eval_summary.json"
+  # model_path: "results/checkpoints/generator_single_layer_ft"  # optional explicit override
