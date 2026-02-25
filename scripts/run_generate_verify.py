@@ -95,8 +95,6 @@ def load_external_prompts(
         return []
 
     limit = int(config.get("generation", {}).get("external_prompt_limit", 50))
-    use_shuffle = bool(config.get("generation", {}).get("external_prompt_shuffle", True))
-
     prompts: List[str] = []
     if isinstance(source, str) and source.startswith("hf://"):
         # Format: hf://dataset_id:split  (split optional; defaults to train)
@@ -108,48 +106,25 @@ def load_external_prompts(
             dataset_id, split = spec.rsplit(":", 1)
         else:
             dataset_id, split = spec, "train"
-        use_streaming = bool(
-            config.get("generation", {}).get("external_prompt_streaming", True)
-        )
-        if use_streaming:
-            # Stream + approximate random sampling via shuffle buffer.
-            dataset = load_dataset(dataset_id, split=split, streaming=True)
-            if use_shuffle:
-                buffer_size = int(
-                    config.get("generation", {}).get(
-                        "external_prompt_shuffle_buffer", 1000
-                    )
-                )
-                dataset = dataset.shuffle(seed=seed, buffer_size=buffer_size)
-            iterator = dataset if limit <= 0 else islice(dataset, limit)
-            for row in iterator:
-                if not isinstance(row, dict):
-                    continue
-                prompt = _extract_prompt_from_row(row)
-                if prompt:
-                    prompts.append(prompt)
-        else:
-            dataset = load_dataset(dataset_id, split=split)
-            if use_shuffle:
-                dataset = dataset.shuffle(seed=seed)
-            if limit > 0:
-                dataset = dataset.select(range(min(limit, len(dataset))))
-            for row in dataset:
-                if not isinstance(row, dict):
-                    continue
-                prompt = _extract_prompt_from_row(row)
-                if prompt:
-                    prompts.append(prompt)
+        # Always stream + shuffle for HF sources.
+        dataset = load_dataset(dataset_id, split=split, streaming=True)
+        dataset = dataset.shuffle(seed=seed, buffer_size=1000)
+        iterator = dataset if limit <= 0 else islice(dataset, limit)
+        for row in iterator:
+            if not isinstance(row, dict):
+                continue
+            prompt = _extract_prompt_from_row(row)
+            if prompt:
+                prompts.append(prompt)
         return prompts
 
     # Local file source (.jsonl expected)
     if os.path.exists(source):
         local_rows = read_jsonl(source)
-        if use_shuffle:
-            import random
+        import random
 
-            rng = random.Random(seed)
-            rng.shuffle(local_rows)
+        rng = random.Random(seed)
+        rng.shuffle(local_rows)
         if limit > 0:
             local_rows = local_rows[:limit]
         for row in local_rows:

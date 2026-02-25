@@ -3,7 +3,8 @@ device: null  # "mps" | "cuda" | "cpu" | null(auto)
 
 data:
   seed_pivots_path: "data/seed_pivots.jsonl"
-  prompt_source: "hf://declare-lab/HarmfulQA:train"  # or local .jsonl path
+  # prompt_source: "hf://declare-lab/HarmfulQA:train"  # null for no external prompts
+  prompt_source: null
   verified_path: "results/verified_data.jsonl"
   val_ratio: 0.2
 
@@ -12,7 +13,12 @@ model:
   verifier_name: "google/gemma-2-2b"
 
 train:
-  batch_size: 4
+  batch_size: 2
+  learning_rate: 2e-5
+  num_epochs: 3
+  max_length: 512
+  output_dir: "results/checkpoints"
+  save_name: "generator_single_layer_ft"
 
 generation:
   num_candidates_per_seed: 3
@@ -23,8 +29,5 @@ generation:
   verify_only_from_generated_candidates: false
   allow_unstructured_fallback: false
   external_prompt_limit: 50
-  external_prompt_shuffle: true
-  external_prompt_streaming: true
-  external_prompt_shuffle_buffer: 1000
   generated_candidates_path: "results/generated_candidates.jsonl"
   rejected_candidates_path: "results/rejected_candidates.jsonl"
