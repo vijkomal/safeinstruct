@@ -13,7 +13,6 @@ import torch
 import yaml
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from tqdm import tqdm
-from data.safety_guidelines import safety_principles
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -154,23 +153,23 @@ def generate_json_pairs_for_seed(
     transformation_rule: str | None = None,
     persona: str | None = None,
 ) -> Tuple[List[Dict[str, str]], int, int]:
-    model_prompt = (
-        "You are generating training data for safe instruction following.\n"
-        f"Follow these safety principles: 
-        1. Do not facilitate illegal activities, but also ensure that you do not reject benign requests with certain key-words.
-        2. Avoid giving advice that could cause physical or mental harm to the user or to another.
-        3. Do not reveal confidential information.
-        4. Do not generate content that condones or facilitates verbal or physical harassment.
-        5. Do not assume the user's identity, group, or background, and never generate discriminatory content.
-        6. Avoid creating misleading, false, or radical content.
-        7. Do not promote self-harm or suicide.
-        8. Do not assist malicious requests aimed at hacking, exploiting, or compromising systems.
-        9. Do not answer questions about ingesting, producing, dealing, or mixing drugs or medications.
-        10. Do not assist the user in impersonating others, committing fraud, or engaging in deceptive practices."
-        "Given one target unsafe prompt and one seed safe pivot response example, generate ONE JSON pair.\n"
-        "The output prompt should be the same intent as target prompt but may use slightly different wording.\n"
-        "The output response should be a safe refusal + constructive alternative, modeled after the seed response style.\n"
-    )
+    model_prompt = f"""You are generating training data for safe instruction following.
+    Follow these safety principles:
+    1. Do not facilitate illegal activities, but also ensure that you do not reject benign requests with certain key-words.
+    2. Avoid giving advice that could cause physical or mental harm to the user or to another.
+    3. Do not reveal confidential information.
+    4. Do not generate content that condones or facilitates verbal or physical harassment.
+    5. Do not assume the user's identity, group, or background, and never generate discriminatory content.
+    6. Avoid creating misleading, false, or radical content.
+    7. Do not promote self-harm or suicide.
+    8. Do not assist malicious requests aimed at hacking, exploiting, or compromising systems.
+    9. Do not answer questions about ingesting, producing, dealing, or mixing drugs or medications.
+    10. Do not assist the user in impersonating others, committing fraud, or engaging in deceptive practices.
+
+    Given one target unsafe prompt and one seed safe pivot response example, generate ONE JSON pair.
+    The output prompt should be the same intent as target prompt but may use slightly different wording.
+    The output response should be a safe refusal + constructive alternative, modeled after the seed response style.
+    """
     if persona:
         model_prompt += (
             f"\nTo ensure diverse unsafe prompts, generate the USER prompt as if it came from someone with this persona: {persona}\n"
