@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sys
+import random
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -12,7 +13,7 @@ import torch
 import yaml
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from tqdm import tqdm
-from safety_guidelines import safety_principles
+from data/safety_guidelines import safety_principles
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -429,7 +430,7 @@ def main() -> None:
         for idx, (target_prompt, seed_prompt_reference, seed_response, safety_principle, transformation_rule) in enumerate(
             tqdm(generation_items, desc="Seeds", unit="seed")
         ):
-            persona = personas[idx % len(personas)] if personas else None
+            persona = random.choice(personas) if personas else None
             generated_pairs, raw_count, parse_failures = generate_json_pairs_for_seed(
                 model=model,
                 tokenizer=tokenizer,
