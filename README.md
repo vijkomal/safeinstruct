@@ -35,9 +35,13 @@ hf auth login
 - Generate + verify loop (minimal):
   - `python scripts/run_generate_verify.py`
   - Uses `model.generator_name` from `configs/default.yaml` to generate responses
-  - Reads `data/seed_pivots.jsonl`
+  - Uses `data.prompt_source` prompts (e.g. `hf://declare-lab/HarmfulQA:train`) when provided
+  - Uses `data/seed_pivots.jsonl` response style as safe pivot exemplars
+  - With `generation.external_prompt_streaming: true`, prompts are streamed from HF and randomly shuffled via buffer sampling (not just first N prompts)
   - Saves raw generated pairs (pre-verifier) to `results/generated_candidates.jsonl`
+  - Saves rejected pairs + verifier outputs to `results/rejected_candidates.jsonl`
   - Writes verified examples to `results/verified_data.jsonl`
+  - Optional: set `generation.verify_only_from_generated_candidates: true` to skip generation and run verifier only on `results/generated_candidates.jsonl`
 
 ## Layout
 
