@@ -149,6 +149,9 @@ def generate_json_pairs_for_seed(
     temperature: float,
     top_p: float,
     allow_unstructured_fallback: bool,
+    safety_principle: str | None = None,
+    transformation_rule: str | None = None,
+    persona: str | None = None,
 ) -> Tuple[List[Dict[str, str]], int, int]:
     model_prompt = (
         "You are generating training data for safe instruction following.\n"
@@ -156,6 +159,19 @@ def generate_json_pairs_for_seed(
         "Given one target unsafe prompt and one seed safe pivot response example, generate ONE JSON pair.\n"
         "The output prompt should be the same intent as target prompt but may use slightly different wording.\n"
         "The output response should be a safe refusal + constructive alternative, modeled after the seed response style.\n"
+    )
+    if persona:
+        model_prompt += (
+            f"\nTo ensure diverse unsafe prompts, generate the USER prompt as if it came from someone with this persona: {persona}\n"
+            "Vary phrasing and framing accordingly so we get diverse representations of potentially unsafe intents.\n"
+        )
+    if safety_principle and transformation_rule:
+        model_prompt += (
+            f"\nSafety principle: {safety_principle}\n"
+            f"Transformation rule: {transformation_rule}\n"
+            "Apply this principle and rule when generating the safe response.\n"
+        )
+    model_prompt += (
         "Return exactly one JSON object with keys: prompt, response.\n"
         "No markdown and no extra text.\n\n"
         f"Target unsafe prompt: {target_prompt}\n"
@@ -239,41 +255,18 @@ def verify_candidate_with_model(
         outputs[0][input_len:],
         skip_special_tokens=True,
     ).strip()
-    normalized = label_text.strip().upper()
-    first_token = normalized.split()[0] if normalized else ""
-    first_token = re.sub(r"[^A-Z0-9_-]", "", first_token)
-    compact = re.sub(r"\s+", "", normalized)
+    # Use only the first token/word for decision; model may echo extra text (e.g. "PASS\n\nAssistant response: ...")
+    # which can contain words like "harmful" and trigger false NO_PASS.
+    first_line = label_text.split("\n")[0].strip()
+    first_token = first_line.split()[0] if first_line else ""
+    first_token_clean = re.sub(r"[^A-Za-z0-9_-]", "", first_token).upper()
 
-    # Prefer NO_PASS checks first to avoid PASS matching inside NO_PASS.
-    no_pass_markers = (
-        "NO_PASS",
-        "NOPASS",
-        "FAIL",
-        "REJECT",
-        "UNSAFE",
-        "HARMFUL",
-        "VIOLATION",
-    )
-    pass_markers = ("PASS", "SAFE", "ALLOWED", "COMPLIANT", "ACCEPTABLE", "OK")
+    no_pass_first_tokens = {"NO_PASS", "NOPASS", "NO", "N", "0", "FALSE", "FAIL"}
+    pass_first_tokens = {"PASS", "YES", "Y", "1", "TRUE", "SAFE", "OK"}
 
-    if any(marker in compact for marker in no_pass_markers) or first_token in {
-        "NO_PASS",
-        "NOPASS",
-        "NO",
-        "N",
-        "0",
-        "FALSE",
-        "FAIL",
-    }:
+    if first_token_clean in no_pass_first_tokens:
         return False, label_text, "unsafe_label"
-
-    if any(marker in compact for marker in pass_markers) or first_token in {
-        "PASS",
-        "YES",
-        "Y",
-        "1",
-        "TRUE",
-    }:
+    if first_token_clean in pass_first_tokens or first_token_clean.startswith("PASS"):
         return True, label_text, "safe_label"
 
     return False, label_text, "unparsed_label"
@@ -337,6 +330,7 @@ def main() -> None:
         )
     )
     verified_path = str(ROOT / config["data"]["verified_path"])
+    personas: List[str] = config.get("generation", {}).get("personas") or []
 
     if verify_only_mode:
         verifier_model, verifier_tokenizer = load_text_model(
@@ -406,14 +400,20 @@ def main() -> None:
                     }
                 )
     else:
-        generation_items: List[Tuple[str, str, str]] = []
+        generation_items: List[Tuple[str, str, str, str | None, str | None]] = []
         if external_prompts:
             # Use external prompts for diversity while modeling response style on seeds.
             for i, prompt in enumerate(external_prompts):
                 seed_row = seed_examples[i % len(seed_examples)]
-                seed_prompt_reference = seed_row["prompt"].strip()
-                seed_response = seed_row["response"].strip()
-                generation_items.append((prompt, seed_prompt_reference, seed_response))
+                generation_items.append(
+                    (
+                        prompt,
+                        seed_row["prompt"].strip(),
+                        seed_row["response"].strip(),
+                        seed_row.get("safety_principle"),
+                        seed_row.get("transformation_rule"),
+                    )
+                )
         else:
             for seed_row in seed_examples:
                 generation_items.append(
@@ -421,12 +421,15 @@ def main() -> None:
                         seed_row["prompt"].strip(),
                         seed_row["prompt"].strip(),
                         seed_row["response"].strip(),
+                        seed_row.get("safety_principle"),
+                        seed_row.get("transformation_rule"),
                     )
                 )
 
-        for target_prompt, seed_prompt_reference, seed_response in tqdm(
-            generation_items, desc="Seeds", unit="seed"
+        for idx, (target_prompt, seed_prompt_reference, seed_response, safety_principle, transformation_rule) in enumerate(
+            tqdm(generation_items, desc="Seeds", unit="seed")
         ):
+            persona = personas[idx % len(personas)] if personas else None
             generated_pairs, raw_count, parse_failures = generate_json_pairs_for_seed(
                 model=model,
                 tokenizer=tokenizer,
@@ -439,6 +442,9 @@ def main() -> None:
                 temperature=temperature,
                 top_p=top_p,
                 allow_unstructured_fallback=allow_unstructured_fallback,
+                safety_principle=safety_principle,
+                transformation_rule=transformation_rule,
+                persona=persona,
             )
             num_generated += raw_count
             num_parse_failures += parse_failures

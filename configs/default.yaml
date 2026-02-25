@@ -2,9 +2,12 @@ seed: 42
 device: null  # "cuda" | "cpu" | null (auto prefers cuda if available, else cpu)
 
 data:
-  # Seed sources (merged at load time). Manual seeds are in git; HarmfulQA is regenerable.
-  seeds_manual_path: "data/seeds_manual.jsonl"
+  # Seed sources (merged at load time). Principles = parameterized rules + domain instantiations.
+  seed_principles_path: "data/seed_principles.json"
+  # seeds_manual_path: "data/seeds_manual.jsonl"  # flat fallback if no principles
   seeds_harmfulqa_path: "data/seeds_harmfulqa.jsonl"
+  # ProsocialDialog (safety rationale + RoTs). Run: PROSOCIAL_LIMIT=200 python scripts/import_prosocial.py
+  # seeds_prosocial_path: "data/seeds_prosocial.jsonl"
   # prompt_source: "hf://declare-lab/HarmfulQA:train"  # null for no external prompts
   prompt_source: null
   verified_path: "results/verified_data.jsonl"
@@ -33,6 +36,13 @@ generation:
   external_prompt_limit: 50
   generated_candidates_path: "results/generated_candidates.jsonl"
   rejected_candidates_path: "results/rejected_candidates.jsonl"
+  # Personas to ensure diverse unsafe prompt representation (avoids model collapse).
+  personas:
+    - "a curious 10-year-old"
+    - "a frustrated user seeking a quick answer"
+    - "someone who sounds innocent or naive"
+    - "a malicious hacker or bad actor"
+    - "a person testing system boundaries"
 
 eval:
   num_samples: 10
