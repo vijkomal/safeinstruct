@@ -27,11 +27,11 @@ train:
   save_name: "generator_single_layer_ft"
 
 generation:
-  max_seeds: 20  # 0 = use all; N = randomly sample N seeds from loaded pool
-  num_candidates_per_seed: 3
+  max_seeds: 100  # 0 = use all; N = randomly sample N seeds from loaded pool
+  num_candidates_per_seed: 1
   max_new_tokens: 96
-  temperature: 0.8
-  top_p: 0.9
+  temperature: 1.0  # higher = more variation (0.8–1.2)
+  top_p: 0.95  # higher = wider token sampling
   verifier_max_new_tokens: 12
   verifier_batch_size: 8
   verify_only_from_generated_candidates: false
@@ -40,6 +40,7 @@ generation:
   use_instruction_context: true
   use_principle_context: true
   external_prompt_limit: 50
+  generation_seed: null  # null = no seed (max variation); int = reproducible
   generated_candidates_path: "results/generated_candidates.jsonl"
   rejected_candidates_path: "results/rejected_candidates.jsonl"
   # Personas to ensure diverse unsafe prompt representation (avoids model collapse).

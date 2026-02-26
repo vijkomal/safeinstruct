@@ -63,10 +63,6 @@ Follow these safety principles:
 8. Do not assist malicious requests aimed at hacking, exploiting, or compromising systems.
 9. Do not answer questions about ingesting, producing, dealing, or mixing drugs or medications.
 10. Do not assist the user in impersonating others, committing fraud, or engaging in deceptive practices.
-
-Given one target unsafe prompt and one seed safe pivot response example, generate ONE JSON pair.
-The output prompt should be the same intent as target prompt but may use slightly different wording.
-The output response should be a safe refusal + constructive alternative, modeled after the seed response style.
 """
 
 
@@ -83,17 +79,21 @@ def build_generation_prompt(
     use_principle_context: bool = True,
 ) -> str:
     parts: List[str] = [GENERATION_POLICY_BASE]
+    parts.append(
+        "You will be given two inputs: a target unsafe prompt and an example of a safe prompt-response pair.\n"
+        "Your task is to output a JSON object containing a safe prompt-response pair. The output prompt should be similar to the target prompt but may use slightly different wording."
+        "The output response should include a helpful and safe alternate prompt with your answer, modeled after the example safe response style.\n"
+    )
     if use_persona_context and persona:
         parts.append(
-            "To ensure diverse unsafe prompts, generate the USER prompt as if it came from "
+            "To ensure diversity, make sure the output prompt is similar to the target prompt but may use slightly different wording, as if it came from "
             f"someone with this persona: {persona}\n"
-            "Vary phrasing and framing accordingly so we get diverse representations of potentially unsafe intents."
         )
-    if use_instruction_context and seed_instruction:
-        parts.append(
-            f"Task instruction: {seed_instruction}\n"
-            "Follow this task instruction when generating the pair."
-        )
+    # if use_instruction_context and seed_instruction:
+    #     parts.append(
+    #         f"Task instruction: {seed_instruction}\n"
+    #         "Follow this task instruction when generating the pair."
+    #     )
     if use_principle_context and safety_principle and transformation_rule:
         parts.append(
             f"Safety principle: {safety_principle}\n"
@@ -101,12 +101,11 @@ def build_generation_prompt(
             "Apply this principle and rule when generating the safe response."
         )
     parts.append(
-        "Output a JSON object: {\"prompt\": \"...\", \"response\": \"...\"}\n"
-        "Both prompt and response must be plain text only—no nested JSON, no user tags, no markdown, no code.\n"
-        "Keep the response to 1–2 sentences.\n\n"
+        "Output a JSON object with keys prompt and response. Fill in with your generated content—do not output placeholder text.\n"
+        "Both values must be plain text only—no nested JSON, no markdown, no code.\n"
+        "Keep the response to 2-3 sentences.\n\n"
         f"Target unsafe prompt: {target_prompt}\n"
-        f"Seed reference prompt: {seed_prompt_reference}\n"
-        f"Seed example safe response: {seed_response}\n\n"
+        f"Example safe prompt-response pair: {{\"prompt\": \"{seed_prompt_reference}\", \"response\": \"{seed_response}\"}}\n"
         "JSON:"
     )
     return "\n\n".join(parts)
@@ -273,6 +272,7 @@ def generate_json_pairs_for_seed(
     use_instruction_context: bool = True,
     use_principle_context: bool = True,
     generation_seed: int | None = None,
+    seed_idx: int = 0,
 ) -> Tuple[List[Dict[str, str]], int, int]:
     generated_pairs = []
     num_raw_generations = 0
@@ -294,9 +294,15 @@ def generate_json_pairs_for_seed(
         )
         inputs = tokenizer(model_prompt, return_tensors="pt").to(device)
         if generation_seed is not None:
-            torch.manual_seed(generation_seed + i * 1000)
+            s = generation_seed + seed_idx * 10000 + i * 1000
+            torch.manual_seed(s)
             if device == "cuda":
-                torch.cuda.manual_seed_all(generation_seed + i * 1000)
+                torch.cuda.manual_seed_all(s)
+            try:
+                import numpy as np
+                np.random.seed(s)
+            except ImportError:
+                pass
         output = model.generate(
             **inputs,
             max_new_tokens=max_new_tokens,
@@ -324,8 +330,9 @@ def generate_json_pairs_for_seed(
                 response = json.dumps(response)
                 prompt = prompt.strip()
             if prompt and response and isinstance(prompt, str) and isinstance(response, str):
-                generated_pairs.append({"prompt": prompt, "response": response})
-                continue
+                if "<prompt>" not in prompt.lower() and "<response>" not in response.lower():
+                    generated_pairs.append({"prompt": prompt, "response": response})
+                    continue
         num_parse_failures += 1
 
     return generated_pairs, num_raw_generations, num_parse_failures
@@ -485,9 +492,12 @@ def main():
     rejected_rows: List[Dict[str, Any]] = []
     verified_rows: List[Dict[str, Any]] = []
 
-    for target_prompt, seed_prompt_reference, seed_response, seed_instruction, safety_principle, transformation_rule in tqdm(
+    gen_seed_cfg = config.get("generation", {}).get("generation_seed")
+    generation_seed = int(gen_seed_cfg) if isinstance(gen_seed_cfg, (int, float)) else None
+
+    for seed_idx, (target_prompt, seed_prompt_reference, seed_response, seed_instruction, safety_principle, transformation_rule) in enumerate(tqdm(
         generation_items, desc="Seeds", unit="seed"
-    ):
+    )):
         persona = random.choice(personas) if (personas and config.get("generation", {}).get("persona", True)) else None
         generated_pairs, _, _ = generate_json_pairs_for_seed(
             model=model,
@@ -507,7 +517,8 @@ def main():
             use_persona_context=use_persona_context,
             use_instruction_context=use_instruction_context,
             use_principle_context=use_principle_context,
-            generation_seed=int(config.get("seed", 42)),
+            generation_seed=generation_seed,
+            seed_idx=seed_idx,
         )
 
         batch_results_all: List[Tuple[bool, str, str]] = []

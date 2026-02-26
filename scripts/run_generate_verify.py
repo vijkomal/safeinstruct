@@ -73,9 +73,8 @@ def build_generation_prompt(
             "Apply this principle and rule when generating the safe response."
         )
     parts.append(
-        "Output a JSON object: {\"prompt\": \"...\", \"response\": \"...\"}\n"
-        "Both prompt and response must be plain text only—no nested JSON, no user tags, no markdown, no code.\n"
-        "Keep response to 1–2 sentences.\n\n"
+        "Output a JSON object with keys prompt and response. Fill in with your generated content—do not output placeholder text.\n"
+        "Both values must be plain text only—no nested JSON, no markdown, no code. Keep response to 1–2 sentences.\n\n"
         f"Target unsafe prompt: {target_prompt}\n"
         f"Seed reference prompt: {seed_prompt_reference}\n"
         f"Seed example safe response: {seed_response}\n\n"
@@ -242,6 +241,7 @@ def generate_json_pairs_for_seed(
     use_instruction_context: bool = True,
     use_principle_context: bool = True,
     generation_seed: int | None = None,
+    seed_idx: int = 0,
 ) -> Tuple[List[Dict[str, str]], int, int]:
     generated_pairs: List[Dict[str, str]] = []
     num_raw_generations = 0
@@ -263,9 +263,15 @@ def generate_json_pairs_for_seed(
         )
         inputs = tokenizer(model_prompt, return_tensors="pt").to(device)
         if generation_seed is not None:
-            torch.manual_seed(generation_seed + i * 1000)
+            s = generation_seed + seed_idx * 10000 + i * 1000
+            torch.manual_seed(s)
             if device == "cuda":
-                torch.cuda.manual_seed_all(generation_seed + i * 1000)
+                torch.cuda.manual_seed_all(s)
+            try:
+                import numpy as np
+                np.random.seed(s)
+            except ImportError:
+                pass
         output = model.generate(
             **inputs,
             max_new_tokens=max_new_tokens,
@@ -290,7 +296,7 @@ def generate_json_pairs_for_seed(
             if isinstance(prompt, str) and isinstance(response, str):
                 prompt = prompt.strip()
                 response = response.strip()
-                if prompt and response:
+                if prompt and response and "<prompt>" not in prompt.lower() and "<response>" not in response.lower():
                     generated_pairs.append({"prompt": prompt, "response": response})
                     continue
         num_parse_failures += 1
@@ -587,6 +593,9 @@ def main() -> None:
                     )
                 )
 
+        gen_seed_cfg = config.get("generation", {}).get("generation_seed")
+        generation_seed = int(gen_seed_cfg) if isinstance(gen_seed_cfg, (int, float)) else None
+
         for idx, (target_prompt, seed_prompt_reference, seed_response, seed_instruction, safety_principle, transformation_rule) in enumerate(
             tqdm(generation_items, desc="Seeds", unit="seed")
         ):
@@ -609,7 +618,8 @@ def main() -> None:
                 use_persona_context=use_persona_context,
                 use_instruction_context=use_instruction_context,
                 use_principle_context=use_principle_context,
-                generation_seed=int(config.get("seed", 42)),
+                generation_seed=generation_seed,
+                seed_idx=idx,
             )
             num_generated += raw_count
             num_parse_failures += parse_failures
