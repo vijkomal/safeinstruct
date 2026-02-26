@@ -3,16 +3,19 @@
 
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any, Dict, List
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+HF_TOKEN = os.environ.get("HF_TOKEN")
 
 import torch
 import yaml
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
-
-ROOT = Path(__file__).resolve().parents[1]
-HF_TOKEN = os.environ.get("HF_TOKEN")
 
 
 def load_config(path: str) -> Dict[str, Any]:
@@ -55,6 +58,28 @@ def _is_lora_checkpoint(path: str) -> bool:
     return os.path.isfile(os.path.join(path, "adapter_config.json"))
 
 
+def _load_model(model_path: str, device: str, load_in_4bit: bool, base_model_name: str | None = None):
+    """Load model, optionally with 4-bit quantization (CUDA only)."""
+    if load_in_4bit and device == "cuda":
+        from transformers import BitsAndBytesConfig
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_quant_type="nf4",
+        )
+        load_path = base_model_name if (base_model_name and _is_lora_checkpoint(model_path)) else model_path
+        model = AutoModelForCausalLM.from_pretrained(
+            load_path,
+            token=HF_TOKEN,
+            quantization_config=bnb_config,
+            device_map="auto",
+        )
+    else:
+        load_path = base_model_name if (base_model_name and _is_lora_checkpoint(model_path)) else model_path
+        model = AutoModelForCausalLM.from_pretrained(load_path, token=HF_TOKEN).to(device)
+    return model
+
+
 def generate_responses(
     model_path: str,
     prompts: List[str],
@@ -62,23 +87,24 @@ def generate_responses(
     max_new_tokens: int,
     desc: str,
     base_model_name: str | None = None,
+    load_in_4bit: bool = False,
 ) -> List[Dict[str, Any]]:
     if _is_lora_checkpoint(model_path) and base_model_name:
         from peft import PeftModel
         tokenizer = AutoTokenizer.from_pretrained(model_path)
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
-        model = AutoModelForCausalLM.from_pretrained(base_model_name, token=HF_TOKEN).to(device)
+        model = _load_model(model_path, device, load_in_4bit, base_model_name)
         model = PeftModel.from_pretrained(model, model_path)
     else:
         tokenizer = AutoTokenizer.from_pretrained(model_path, token=HF_TOKEN)
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
-        model = AutoModelForCausalLM.from_pretrained(model_path, token=HF_TOKEN).to(device)
+        model = _load_model(model_path, device, load_in_4bit)
     model.eval()
 
     outputs: List[Dict[str, Any]] = []
-    stop_markers = ("\nPrompt:", "\nUser:", "\n###")
+    stop_markers = ("\nPrompt:", "\nResponse:", "\n###")
     for prompt in tqdm(prompts, desc=desc, unit="prompt"):
         eval_prompt = (
             "You are a helpful and safe assistant.\n"
@@ -121,6 +147,7 @@ def main() -> None:
         raise ValueError("No prompts available for eval.")
 
     device = resolve_device(config)
+    load_in_4bit = bool(config.get("model", {}).get("load_in_4bit", False))
     base_model_path = config["model"]["generator_name"]
     ft_model_path = eval_cfg.get("model_path") or str(
         ROOT / config["train"]["output_dir"] / config["train"]["save_name"]
@@ -133,6 +160,7 @@ def main() -> None:
         device=device,
         max_new_tokens=max_new_tokens,
         desc="Eval base",
+        load_in_4bit=load_in_4bit,
     )
 
     if base_only:
@@ -153,6 +181,7 @@ def main() -> None:
             max_new_tokens=max_new_tokens,
             desc="Eval fine-tuned",
             base_model_name=base_model_path if _is_lora_checkpoint(ft_model_path) else None,
+            load_in_4bit=load_in_4bit,
         )
         compare_rows = [
             {

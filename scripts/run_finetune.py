@@ -15,10 +15,9 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from src.data import load_verified_examples
-
-# Optional: HF token for gated models (Gemma)
 HF_TOKEN = os.environ.get("HF_TOKEN")
+
+from src.data import load_verified_examples
 
 
 def load_config(path: str) -> Dict[str, Any]:
@@ -37,7 +36,7 @@ def resolve_device(config: Dict[str, Any]) -> str:
 
 def format_example(prompt: str, response: str) -> Tuple[str, str]:
     """Return (full_text, prompt_prefix) for loss masking. prompt_prefix is everything before response."""
-    prefix = f"User: {prompt}\nAssistant: "
+    prefix = f"Prompt: {prompt}\nResponse: "
     full = prefix + response
     return full, prefix
 
