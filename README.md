@@ -22,13 +22,38 @@ conda activate safeinstruct
 
 For Gemma models (e.g. `google/gemma-2-2b`), first accept access on the model page, then login:
 
-1. Open `https://huggingface.co/google/gemma-2-2b`
-2. Click **Agree and access repository** (or equivalent access button)
-3. Login locally:
+1. Open `https://huggingface.co/google/gemma-2-2b` and **accept the model's terms and conditions** (click "Agree and access repository").
+2. Login locally in the CLI:
 
 ```bash
-hf auth login
+huggingface-cli login
 ```
+
+(If using `hf` alias: `hf auth login`)
+
+**Important:** If you created a *fine-grained* token, it must have **"Access gated repos"** enabled. Go to https://huggingface.co/settings/tokens, edit your token, and turn on that permission. Or create a *classic* token (Read or Write)—those have gated access by default.
+
+### Troubleshooting
+
+**OMP / shared memory error** (`Can't open SHM2`): Common in Cursor, Docker, or sandboxed environments. Run with:
+
+```bash
+OMP_NUM_THREADS=1 python scripts/run_generate_verify.py
+```
+
+**Quick debugging** (fewer seeds to isolate bugs): Limit seeds with `SEED_LIMIT`:
+
+```bash
+SEED_LIMIT=5 OMP_NUM_THREADS=1 python scripts/run_generate_verify.py
+```
+
+**Ungated model for local testing**: If Gemma access fails, use an ungated model without editing config:
+
+```bash
+GENERATOR_MODEL=HuggingFaceTB/SmolLM-360M-Instruct SEED_LIMIT=3 OMP_NUM_THREADS=1 python scripts/run_generate_verify.py
+```
+
+(When `GENERATOR_MODEL` is set, the verifier uses the same model by default, so you only load one ungated model.)
 
 ## Seed Data
 

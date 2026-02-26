@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """Minimal model-based generation + verifier loop using seed pivots."""
 
-import json
 import os
+
+# Avoid OpenMP SHM errors in sandboxed/Docker environments
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+
+import json
 import re
 import sys
 import random
@@ -312,8 +316,18 @@ def main() -> None:
     config = load_config(str(ROOT / "configs" / "default.yaml"))
 
     device = resolve_device(config)
-    generator_name = config["model"]["generator_name"]
-    verifier_name = config["model"].get("verifier_name") or generator_name
+    # Override models via env for quick testing with ungated models (e.g. SmolLM)
+    generator_name = os.environ.get("GENERATOR_MODEL") or config["model"]["generator_name"]
+    verifier_name = (
+        os.environ.get("VERIFIER_MODEL")
+        or (generator_name if os.environ.get("GENERATOR_MODEL") else None)
+        or config["model"].get("verifier_name")
+        or generator_name
+    )
+    # Patch config so load_generator / verifier use overridden models
+    config.setdefault("model", {})["generator_name"] = generator_name
+    config.setdefault("model", {})["verifier_name"] = verifier_name
+
     num_candidates = int(config.get("generation", {}).get("num_candidates_per_seed", 3))
     max_new_tokens = int(config.get("generation", {}).get("max_new_tokens", 96))
     temperature = float(config.get("generation", {}).get("temperature", 0.8))
@@ -360,6 +374,16 @@ def main() -> None:
             )
 
     seed_examples = [] if verify_only_mode else load_seed_examples(config)
+
+    # Limit seeds for quick debugging (e.g. SEED_LIMIT=5 python scripts/run_generate_verify.py)
+    try:
+        seed_limit = int(os.environ.get("SEED_LIMIT", 0))
+    except (ValueError, TypeError):
+        seed_limit = 0
+    if seed_limit > 0:
+        seed_examples = seed_examples[:seed_limit]
+        print(f"[DEBUG] SEED_LIMIT={seed_limit}: using {len(seed_examples)} seeds")
+
     external_prompts = [] if verify_only_mode else load_external_prompts(config, seed=int(config.get("seed", 42)))
     generated_rows: List[Dict[str, Any]] = []
     rejected_rows: List[Dict[str, Any]] = []
