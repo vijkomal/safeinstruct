@@ -15,6 +15,7 @@ dependencies:
     - huggingface_hub>=0.20
     - datasets>=2.16
     - accelerate>=0.25
+    - peft>=0.10
     - pyyaml
     - tqdm
     - scikit-learn

@@ -12,6 +12,7 @@ from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 ROOT = Path(__file__).resolve().parents[1]
+HF_TOKEN = os.environ.get("HF_TOKEN")
 
 
 def load_config(path: str) -> Dict[str, Any]:
@@ -50,17 +51,30 @@ def resolve_device(config: Dict[str, Any]) -> str:
     return "cpu"
 
 
+def _is_lora_checkpoint(path: str) -> bool:
+    return os.path.isfile(os.path.join(path, "adapter_config.json"))
+
+
 def generate_responses(
     model_path: str,
     prompts: List[str],
     device: str,
     max_new_tokens: int,
     desc: str,
+    base_model_name: str | None = None,
 ) -> List[Dict[str, Any]]:
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    model = AutoModelForCausalLM.from_pretrained(model_path).to(device)
+    if _is_lora_checkpoint(model_path) and base_model_name:
+        from peft import PeftModel
+        tokenizer = AutoTokenizer.from_pretrained(model_path)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        model = AutoModelForCausalLM.from_pretrained(base_model_name, token=HF_TOKEN).to(device)
+        model = PeftModel.from_pretrained(model, model_path)
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(model_path, token=HF_TOKEN)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        model = AutoModelForCausalLM.from_pretrained(model_path, token=HF_TOKEN).to(device)
     model.eval()
 
     outputs: List[Dict[str, Any]] = []
@@ -108,11 +122,10 @@ def main() -> None:
 
     device = resolve_device(config)
     base_model_path = config["model"]["generator_name"]
-    ft_model_path = str(ROOT / config["train"]["output_dir"] / config["train"]["save_name"])
-    if not Path(ft_model_path).exists():
-        raise ValueError(
-            f"Fine-tuned model not found at {ft_model_path}. Run scripts/run_finetune.py first."
-        )
+    ft_model_path = eval_cfg.get("model_path") or str(
+        ROOT / config["train"]["output_dir"] / config["train"]["save_name"]
+    )
+    base_only = bool(eval_cfg.get("base_only", False))
 
     base_outputs = generate_responses(
         model_path=base_model_path,
@@ -121,23 +134,34 @@ def main() -> None:
         max_new_tokens=max_new_tokens,
         desc="Eval base",
     )
-    ft_outputs = generate_responses(
-        model_path=ft_model_path,
-        prompts=prompts,
-        device=device,
-        max_new_tokens=max_new_tokens,
-        desc="Eval fine-tuned",
-    )
 
-    compare_rows: List[Dict[str, Any]] = []
-    for i, prompt in enumerate(prompts):
-        compare_rows.append(
+    if base_only:
+        compare_rows = [
+            {"prompt": p["prompt"], "base_response": p["response"]}
+            for p in base_outputs
+        ]
+    else:
+        if not Path(ft_model_path).exists():
+            raise ValueError(
+                f"Fine-tuned model not found at {ft_model_path}. "
+                "Run scripts/run_finetune.py first or set eval.base_only: true for baseline-only eval."
+            )
+        ft_outputs = generate_responses(
+            model_path=ft_model_path,
+            prompts=prompts,
+            device=device,
+            max_new_tokens=max_new_tokens,
+            desc="Eval fine-tuned",
+            base_model_name=base_model_path if _is_lora_checkpoint(ft_model_path) else None,
+        )
+        compare_rows = [
             {
-                "prompt": prompt,
+                "prompt": base_outputs[i]["prompt"],
                 "base_response": base_outputs[i]["response"],
                 "finetuned_response": ft_outputs[i]["response"],
             }
-        )
+            for i in range(len(prompts))
+        ]
 
     write_jsonl(output_path, compare_rows)
     print(json.dumps({"device": device, "output_path": output_path}, indent=2))

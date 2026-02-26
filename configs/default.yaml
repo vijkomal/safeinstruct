@@ -20,11 +20,18 @@ model:
 
 train:
   batch_size: 2
+  grad_accum_steps: 1  # effective batch = batch_size * grad_accum_steps
   learning_rate: 2e-5
   num_epochs: 3
   max_length: 512
   output_dir: "results/checkpoints"
   save_name: "generator_single_layer_ft"
+  train_on_response_only: true  # only compute loss on assistant reply (recommended)
+  full_finetune: false  # true = train all layers; false = lm_head only
+  lora: true  # true = LoRA (peft); overrides full_finetune when true
+  lora_r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
 
 generation:
   max_seeds: 100  # 0 = use all; N = randomly sample N seeds from loaded pool
@@ -86,4 +93,5 @@ eval:
   num_samples: 10
   max_new_tokens: 96
   output_path: "results/eval_outputs.jsonl"
-  # model_path: "results/checkpoints/generator_single_layer_ft"  # optional explicit override
+  base_only: false  # true = eval baseline only (no ft model needed)
+  # model_path: "results/checkpoints/generator_single_layer_ft"  # optional override; auto-detects LoRA
