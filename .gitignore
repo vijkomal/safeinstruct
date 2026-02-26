@@ -42,3 +42,6 @@ results/checkpoints/
 results/predictions/
 results/generated_candidates.jsonl
 results/verified_data.jsonl
+results/rejected_candidates.jsonl
+results/eval_outputs.jsonl
+results/eval_summary.json
