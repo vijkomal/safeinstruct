@@ -60,6 +60,7 @@ def _load_seed_principles(path: str, base_dir: Path) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     for p in data.get("principles", []):
         principle_id = p.get("principle_id", "")
+        instruction = p.get("instruction", "")
         safety_principle = p.get("safety_principle", "")
         transformation_rule = p.get("transformation_rule", "")
         for inst in p.get("domain_instantiations", []):
@@ -69,6 +70,7 @@ def _load_seed_principles(path: str, base_dir: Path) -> List[Dict[str, Any]]:
                 "safety_label": "safe",
                 "source": "manual",
                 "principle_id": principle_id,
+                "instruction": instruction,
                 "safety_principle": safety_principle,
                 "transformation_rule": transformation_rule,
                 "domain": inst.get("domain", ""),
@@ -128,7 +130,15 @@ def load_seed_examples(
         rows.extend(_read_jsonl(harmfulqa_path, base))
     if prosocial_path and source_filter in (None, "prosocial"):
         rows.extend(_read_jsonl(prosocial_path, base))
-    return rows
+    # Deduplicate by (prompt, response) - keep first occurrence
+    seen: set[tuple[str, str]] = set()
+    deduped: List[Dict[str, Any]] = []
+    for r in rows:
+        key = (r.get("prompt", ""), r.get("response", ""))
+        if key not in seen:
+            seen.add(key)
+            deduped.append(r)
+    return deduped
 
 
 def load_verified_examples(

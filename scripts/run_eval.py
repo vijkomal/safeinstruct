@@ -79,8 +79,6 @@ def generate_responses(
             **inputs,
             max_new_tokens=max_new_tokens,
             do_sample=False,
-            repetition_penalty=1.1,
-            no_repeat_ngram_size=3,
             pad_token_id=tokenizer.eos_token_id,
         )
         input_len = inputs["input_ids"].shape[1]

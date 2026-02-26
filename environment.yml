@@ -11,6 +11,7 @@ dependencies:
   - pip
   - pip:
     - transformers>=4.36
+    - bitsandbytes>=0.43
     - huggingface_hub>=0.20
     - datasets>=2.16
     - accelerate>=0.25

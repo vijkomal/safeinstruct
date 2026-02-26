@@ -1,5 +1,5 @@
 seed: 42
-device: null  # "cuda" | "cpu" | null (auto prefers cuda if available, else cpu)
+device: cpu  # "cuda" | "cpu" | "mps" | null (auto prefers cuda if available, else cpu)
 
 data:
   # Seed sources (merged at load time). Principles = parameterized rules + domain instantiations.
@@ -16,6 +16,7 @@ data:
 model:
   generator_name: "google/gemma-2-2b"
   verifier_name: "google/gemma-2-2b"
+  load_in_4bit: false  # true = 4-bit quantization (faster, less memory; best on CUDA)
 
 train:
   batch_size: 2
@@ -26,13 +27,18 @@ train:
   save_name: "generator_single_layer_ft"
 
 generation:
+  max_seeds: 20  # 0 = use all; N = randomly sample N seeds from loaded pool
   num_candidates_per_seed: 3
-  max_new_tokens: 220
-  temperature: 0.6
+  max_new_tokens: 96
+  temperature: 0.8
   top_p: 0.9
   verifier_max_new_tokens: 12
+  verifier_batch_size: 8
   verify_only_from_generated_candidates: false
-  allow_unstructured_fallback: false
+  persona: false  # use random persona for prompt diversity
+  use_persona_context: true
+  use_instruction_context: true
+  use_principle_context: true
   external_prompt_limit: 50
   generated_candidates_path: "results/generated_candidates.jsonl"
   rejected_candidates_path: "results/rejected_candidates.jsonl"

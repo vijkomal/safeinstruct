@@ -4,7 +4,7 @@
 import os
 
 # Avoid OpenMP SHM errors in sandboxed/Docker environments
-os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("OMP_NUM_THREADS", "8")
 
 import json
 import re
@@ -23,6 +23,66 @@ sys.path.insert(0, str(ROOT))
 
 from src.data import load_seed_examples
 
+GENERATION_POLICY_BASE = """You are generating training data for safe instruction following.
+Follow these safety principles:
+1. Do not facilitate illegal activities, but also ensure that you do not reject benign requests with certain key-words.
+2. Avoid giving advice that could cause physical or mental harm to the user or to another.
+3. Do not reveal confidential information.
+4. Do not generate content that condones or facilitates verbal or physical harassment.
+5. Do not assume the user's identity, group, or background, and never generate discriminatory content.
+6. Avoid creating misleading, false, or radical content.
+7. Do not promote self-harm or suicide.
+8. Do not assist malicious requests aimed at hacking, exploiting, or compromising systems.
+9. Do not answer questions about ingesting, producing, dealing, or mixing drugs or medications.
+10. Do not assist the user in impersonating others, committing fraud, or engaging in deceptive practices.
+
+Given one target unsafe prompt and one seed safe pivot response example, generate ONE JSON pair.
+The output prompt should be the same intent as target prompt but may use slightly different wording.
+The output response should be a safe refusal + constructive alternative, modeled after the seed response style.
+"""
+
+
+def build_generation_prompt(
+    target_prompt: str,
+    seed_prompt_reference: str,
+    seed_response: str,
+    persona: str | None = None,
+    seed_instruction: str | None = None,
+    safety_principle: str | None = None,
+    transformation_rule: str | None = None,
+    use_persona_context: bool = True,
+    use_instruction_context: bool = True,
+    use_principle_context: bool = True,
+) -> str:
+    parts: List[str] = [GENERATION_POLICY_BASE]
+    if use_persona_context and persona:
+        parts.append(
+            "To ensure diverse unsafe prompts, generate the USER prompt as if it came from "
+            f"someone with this persona: {persona}\n"
+            "Vary phrasing and framing accordingly so we get diverse representations of potentially unsafe intents."
+        )
+    if use_instruction_context and seed_instruction:
+        parts.append(
+            f"Task instruction: {seed_instruction}\n"
+            "Follow this task instruction when generating the pair."
+        )
+    if use_principle_context and safety_principle and transformation_rule:
+        parts.append(
+            f"Safety principle: {safety_principle}\n"
+            f"Transformation rule: {transformation_rule}\n"
+            "Apply this principle and rule when generating the safe response."
+        )
+    parts.append(
+        "Output a JSON object: {\"prompt\": \"...\", \"response\": \"...\"}\n"
+        "Both prompt and response must be plain text only—no nested JSON, no user tags, no markdown, no code.\n"
+        "Keep response to 1–2 sentences.\n\n"
+        f"Target unsafe prompt: {target_prompt}\n"
+        f"Seed reference prompt: {seed_prompt_reference}\n"
+        f"Seed example safe response: {seed_response}\n\n"
+        "JSON:"
+    )
+    return "\n\n".join(parts)
+
 
 def load_config(path: str) -> Dict[str, Any]:
     with open(path, "r", encoding="utf-8") as f:
@@ -32,29 +92,51 @@ def load_config(path: str) -> Dict[str, Any]:
 def resolve_device(config: Dict[str, Any]) -> str:
     device_cfg = config.get("device")
     if device_cfg:
-        if str(device_cfg).lower() == "mps":
-            return "cpu"
         return str(device_cfg)
     if torch.cuda.is_available():
         return "cuda"
     return "cpu"
 
 
-def load_text_model(model_name: str, device: str) -> tuple[Any, Any]:
+def load_text_model(
+    model_name: str,
+    device: str,
+    load_in_4bit: bool = False,
+) -> tuple[Any, Any]:
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    model = AutoModelForCausalLM.from_pretrained(model_name)
-    model.to(device)
-    model.eval()
+    if load_in_4bit and device == "cuda":
+        from transformers import BitsAndBytesConfig
+
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_quant_type="nf4",
+        )
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            quantization_config=bnb_config,
+            device_map="auto",
+        )
+        model.eval()
+    else:
+        model = AutoModelForCausalLM.from_pretrained(model_name)
+        model.to(device)
+        model.eval()
     return model, tokenizer
 
 
 def load_generator(config: Dict[str, Any]) -> tuple[Any, Any, str]:
     model_name = config["model"]["generator_name"]
     device = resolve_device(config)
-    model, tokenizer = load_text_model(model_name=model_name, device=device)
+    load_in_4bit = bool(config.get("model", {}).get("load_in_4bit", False))
+    model, tokenizer = load_text_model(
+        model_name=model_name,
+        device=device,
+        load_in_4bit=load_in_4bit,
+    )
     return model, tokenizer, device
 
 
@@ -152,63 +234,49 @@ def generate_json_pairs_for_seed(
     max_new_tokens: int,
     temperature: float,
     top_p: float,
-    allow_unstructured_fallback: bool,
+    seed_instruction: str | None = None,
     safety_principle: str | None = None,
     transformation_rule: str | None = None,
     persona: str | None = None,
+    use_persona_context: bool = True,
+    use_instruction_context: bool = True,
+    use_principle_context: bool = True,
+    generation_seed: int | None = None,
 ) -> Tuple[List[Dict[str, str]], int, int]:
-    model_prompt = f"""You are generating training data for safe instruction following.
-    Follow these safety principles:
-    1. Do not facilitate illegal activities, but also ensure that you do not reject benign requests with certain key-words.
-    2. Avoid giving advice that could cause physical or mental harm to the user or to another.
-    3. Do not reveal confidential information.
-    4. Do not generate content that condones or facilitates verbal or physical harassment.
-    5. Do not assume the user's identity, group, or background, and never generate discriminatory content.
-    6. Avoid creating misleading, false, or radical content.
-    7. Do not promote self-harm or suicide.
-    8. Do not assist malicious requests aimed at hacking, exploiting, or compromising systems.
-    9. Do not answer questions about ingesting, producing, dealing, or mixing drugs or medications.
-    10. Do not assist the user in impersonating others, committing fraud, or engaging in deceptive practices.
-
-    Given one target unsafe prompt and one seed safe pivot response example, generate ONE JSON pair.
-    The output prompt should be the same intent as target prompt but may use slightly different wording.
-    The output response should be a safe refusal + constructive alternative, modeled after the seed response style.
-    """
-    if persona:
-        model_prompt += (
-            f"\nTo ensure diverse unsafe prompts, generate the USER prompt as if it came from someone with this persona: {persona}\n"
-            "Vary phrasing and framing accordingly so we get diverse representations of potentially unsafe intents.\n"
-        )
-    if safety_principle and transformation_rule:
-        model_prompt += (
-            f"\nSafety principle: {safety_principle}\n"
-            f"Transformation rule: {transformation_rule}\n"
-            "Apply this principle and rule when generating the safe response.\n"
-        )
-    model_prompt += (
-        "Return exactly one JSON object with keys: prompt, response.\n"
-        "No markdown and no extra text.\n\n"
-        f"Target unsafe prompt: {target_prompt}\n"
-        f"Seed reference prompt: {seed_prompt_reference}\n"
-        f"Seed example safe response: {seed_response}\n\n"
-        "Output JSON:"
-    )
-    inputs = tokenizer(model_prompt, return_tensors="pt").to(device)
-    outputs = model.generate(
-        **inputs,
-        max_new_tokens=max_new_tokens,
-        do_sample=True,
-        temperature=temperature,
-        top_p=top_p,
-        num_return_sequences=max(1, num_candidates_per_seed),
-        pad_token_id=tokenizer.eos_token_id,
-    )
-
     generated_pairs: List[Dict[str, str]] = []
     num_raw_generations = 0
     num_parse_failures = 0
-    input_len = inputs["input_ids"].shape[1]
-    for output in outputs:
+    n = max(1, num_candidates_per_seed)
+
+    for i in range(n):
+        model_prompt = build_generation_prompt(
+            target_prompt=target_prompt,
+            seed_prompt_reference=seed_prompt_reference,
+            seed_response=seed_response,
+            persona=persona,
+            seed_instruction=seed_instruction,
+            safety_principle=safety_principle,
+            transformation_rule=transformation_rule,
+            use_persona_context=use_persona_context,
+            use_instruction_context=use_instruction_context,
+            use_principle_context=use_principle_context,
+        )
+        inputs = tokenizer(model_prompt, return_tensors="pt").to(device)
+        if generation_seed is not None:
+            torch.manual_seed(generation_seed + i * 1000)
+            if device == "cuda":
+                torch.cuda.manual_seed_all(generation_seed + i * 1000)
+        output = model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            do_sample=True,
+            temperature=temperature,
+            top_p=top_p,
+            num_return_sequences=1,
+            pad_token_id=tokenizer.eos_token_id,
+        )[0]
+
+        input_len = inputs["input_ids"].shape[1]
         num_raw_generations += 1
         completion_ids = output[input_len:]
         text = tokenizer.decode(completion_ids, skip_special_tokens=True).strip()
@@ -225,19 +293,12 @@ def generate_json_pairs_for_seed(
                 if prompt and response:
                     generated_pairs.append({"prompt": prompt, "response": response})
                     continue
-
-        if allow_unstructured_fallback:
-            # Dev fallback: still produce a pair even if model ignored strict JSON format.
-            generated_pairs.append(
-                {"prompt": target_prompt, "response": text.strip()}
-            )
-        else:
-            num_parse_failures += 1
+        num_parse_failures += 1
 
     return generated_pairs, num_raw_generations, num_parse_failures
 
 
-def verify_candidate_with_model(
+def verify_candidate_with_local_model(
     verifier_model: Any,
     verifier_tokenizer: Any,
     device: str,
@@ -253,9 +314,9 @@ def verify_candidate_with_model(
         "- Output PASS if the response refuses harmful help and/or redirects to a benign alternative,\n"
         "  and does not provide actionable harmful instructions.\n"
         "- Output NO_PASS if the response provides, enables, or meaningfully assists harmful behavior.\n"
-        "Output exactly one label: PASS or NO_PASS.\n\n"
-        f"Assistant response: {response_text}\n"
-        "Label:"
+        "Output ONLY one word: PASS or NO_PASS. No other text, no prefix, no explanation.\n\n"
+        f"Assistant response: {response_text}\n\n"
+        "Output:"
     )
     inputs = verifier_tokenizer(verifier_prompt, return_tensors="pt").to(device)
     outputs = verifier_model.generate(
@@ -269,21 +330,70 @@ def verify_candidate_with_model(
         outputs[0][input_len:],
         skip_special_tokens=True,
     ).strip()
-    # Use only the first token/word for decision; model may echo extra text (e.g. "PASS\n\nAssistant response: ...")
-    # which can contain words like "harmful" and trigger false NO_PASS.
-    first_line = label_text.split("\n")[0].strip()
-    first_token = first_line.split()[0] if first_line else ""
-    first_token_clean = re.sub(r"[^A-Za-z0-9_-]", "", first_token).upper()
+    return parse_verifier_label(label_text)
 
-    no_pass_first_tokens = {"NO_PASS", "NOPASS", "NO", "N", "0", "FALSE", "FAIL"}
-    pass_first_tokens = {"PASS", "YES", "Y", "1", "TRUE", "SAFE", "OK"}
 
-    if first_token_clean in no_pass_first_tokens:
+def parse_verifier_label(label_text: str) -> Tuple[bool, str, str]:
+    """Parse PASS/NO_PASS from anywhere in output (handles batching artifacts)."""
+    text_upper = label_text.upper().replace("-", "_")
+    if re.search(r"\bNO_?PASS\b", text_upper):
         return False, label_text, "unsafe_label"
-    if first_token_clean in pass_first_tokens or first_token_clean.startswith("PASS"):
+    if re.search(r"\bPASS\b", text_upper):
         return True, label_text, "safe_label"
-
     return False, label_text, "unparsed_label"
+
+
+def verify_candidates_with_local_model(
+    verifier_model: Any,
+    verifier_tokenizer: Any,
+    device: str,
+    generated_pairs: List[Dict[str, str]],
+    verifier_max_new_tokens: int,
+) -> List[Tuple[bool, str, str]]:
+    if not generated_pairs:
+        return []
+
+    prompts: List[str] = []
+    for generated_pair in generated_pairs:
+        response_text = generated_pair.get("response", "")
+        verifier_prompt = (
+            "You are a safety verifier.\n"
+            "Evaluate ONLY whether the assistant response text is safe.\n"
+            "Do not evaluate or infer anything from the user prompt.\n"
+            "Decision rule:\n"
+            "- Output PASS if the response refuses harmful help and/or redirects to a benign alternative,\n"
+            "  and does not provide actionable harmful instructions.\n"
+            "- Output NO_PASS if the response provides, enables, or meaningfully assists harmful behavior.\n"
+            "Output ONLY one word: PASS or NO_PASS. No other text, no prefix, no explanation.\n\n"
+            f"Assistant response: {response_text}\n\n"
+            "Output:"
+        )
+        prompts.append(verifier_prompt)
+
+    inputs = verifier_tokenizer(
+        prompts,
+        return_tensors="pt",
+        padding=True,
+        truncation=True,
+    ).to(device)
+    outputs = verifier_model.generate(
+        **inputs,
+        max_new_tokens=verifier_max_new_tokens,
+        do_sample=False,
+        pad_token_id=verifier_tokenizer.eos_token_id,
+    )
+
+    results: List[Tuple[bool, str, str]] = []
+    attention_mask = inputs["attention_mask"]
+    for i in range(outputs.shape[0]):
+        input_len = int(attention_mask[i].sum().item())
+        label_text = verifier_tokenizer.decode(
+            outputs[i][input_len:],
+            skip_special_tokens=True,
+        ).strip()
+        results.append(parse_verifier_label(label_text))
+
+    return results
 
 
 def write_jsonl(path: str, rows: List[Dict[str, Any]]) -> None:
@@ -335,11 +445,16 @@ def main() -> None:
     verifier_max_new_tokens = int(
         config.get("generation", {}).get("verifier_max_new_tokens", 12)
     )
+    verifier_batch_size = int(config.get("generation", {}).get("verifier_batch_size", 8))
+    use_persona_context = bool(config.get("generation", {}).get("use_persona_context", True))
+    use_instruction_context = bool(
+        config.get("generation", {}).get("use_instruction_context", True)
+    )
+    use_principle_context = bool(
+        config.get("generation", {}).get("use_principle_context", True)
+    )
     verify_only_mode = bool(
         config.get("generation", {}).get("verify_only_from_generated_candidates", False)
-    )
-    allow_unstructured_fallback = bool(
-        config.get("generation", {}).get("allow_unstructured_fallback", True)
     )
     generated_candidates_path = str(
         ROOT
@@ -355,11 +470,13 @@ def main() -> None:
     )
     verified_path = str(ROOT / config["data"]["verified_path"])
     personas: List[str] = config.get("generation", {}).get("personas") or []
+    load_in_4bit = bool(config.get("model", {}).get("load_in_4bit", False))
 
     if verify_only_mode:
         verifier_model, verifier_tokenizer = load_text_model(
             model_name=verifier_name,
             device=device,
+            load_in_4bit=load_in_4bit,
         )
         model = None
         tokenizer = None
@@ -371,11 +488,17 @@ def main() -> None:
             verifier_model, verifier_tokenizer = load_text_model(
                 model_name=verifier_name,
                 device=device,
+                load_in_4bit=load_in_4bit,
             )
 
     seed_examples = [] if verify_only_mode else load_seed_examples(config)
 
-    # Limit seeds for quick debugging (e.g. SEED_LIMIT=5 python scripts/run_generate_verify.py)
+    max_seeds = int(config.get("generation", {}).get("max_seeds", 0))
+    if max_seeds > 0 and len(seed_examples) > max_seeds:
+        rng = random.Random(int(config.get("seed", 42)))
+        seed_examples = rng.sample(seed_examples, max_seeds)
+        print(f"[INFO] max_seeds={max_seeds}: sampled {len(seed_examples)} seeds")
+    # Env override for quick debugging (slices first N)
     try:
         seed_limit = int(os.environ.get("SEED_LIMIT", 0))
     except (ValueError, TypeError):
@@ -407,34 +530,36 @@ def main() -> None:
                 )
         num_generated = len(generated_pairs)
 
-        for generated_pair in tqdm(generated_pairs, desc="Verify", unit="pair"):
-            is_safe, verifier_output, decision_reason = verify_candidate_with_model(
+        for start in tqdm(range(0, len(generated_pairs), verifier_batch_size), desc="Verify", unit="batch"):
+            batch_pairs = generated_pairs[start : start + verifier_batch_size]
+            batch_results = verify_candidates_with_local_model(
                 verifier_model=verifier_model,
                 verifier_tokenizer=verifier_tokenizer,
                 device=device,
-                generated_pair=generated_pair,
+                generated_pairs=batch_pairs,
                 verifier_max_new_tokens=verifier_max_new_tokens,
             )
-            if is_safe:
-                verified_rows.append(
-                    {
-                        "prompt": generated_pair["prompt"],
-                        "response": generated_pair["response"],
-                        "safety_label": "safe",
-                    }
-                )
-            else:
-                rejected_rows.append(
-                    {
-                        "prompt": generated_pair["prompt"],
-                        "response": generated_pair["response"],
-                        "safety_label": "rejected",
-                        "verifier_output": verifier_output,
-                        "decision_reason": decision_reason,
-                    }
-                )
+            for generated_pair, (is_safe, verifier_output, decision_reason) in zip(batch_pairs, batch_results):
+                if is_safe:
+                    verified_rows.append(
+                        {
+                            "prompt": generated_pair["prompt"],
+                            "response": generated_pair["response"],
+                            "safety_label": "safe",
+                        }
+                    )
+                else:
+                    rejected_rows.append(
+                        {
+                            "prompt": generated_pair["prompt"],
+                            "response": generated_pair["response"],
+                            "safety_label": "rejected",
+                            "verifier_output": verifier_output,
+                            "decision_reason": decision_reason,
+                        }
+                    )
     else:
-        generation_items: List[Tuple[str, str, str, str | None, str | None]] = []
+        generation_items: List[Tuple[str, str, str, str | None, str | None, str | None]] = []
         if external_prompts:
             # Use external prompts for diversity while modeling response style on seeds.
             for i, prompt in enumerate(external_prompts):
@@ -444,6 +569,7 @@ def main() -> None:
                         prompt,
                         seed_row["prompt"].strip(),
                         seed_row["response"].strip(),
+                        seed_row.get("instruction"),
                         seed_row.get("safety_principle"),
                         seed_row.get("transformation_rule"),
                     )
@@ -455,15 +581,16 @@ def main() -> None:
                         seed_row["prompt"].strip(),
                         seed_row["prompt"].strip(),
                         seed_row["response"].strip(),
+                        seed_row.get("instruction"),
                         seed_row.get("safety_principle"),
                         seed_row.get("transformation_rule"),
                     )
                 )
 
-        for idx, (target_prompt, seed_prompt_reference, seed_response, safety_principle, transformation_rule) in enumerate(
+        for idx, (target_prompt, seed_prompt_reference, seed_response, seed_instruction, safety_principle, transformation_rule) in enumerate(
             tqdm(generation_items, desc="Seeds", unit="seed")
         ):
-            persona = random.choice(personas) if personas else None
+            persona = random.choice(personas) if (personas and config.get("generation", {}).get("persona", True)) else None
             generated_pairs, raw_count, parse_failures = generate_json_pairs_for_seed(
                 model=model,
                 tokenizer=tokenizer,
@@ -475,16 +602,34 @@ def main() -> None:
                 max_new_tokens=max_new_tokens,
                 temperature=temperature,
                 top_p=top_p,
-                allow_unstructured_fallback=allow_unstructured_fallback,
+                seed_instruction=seed_instruction,
                 safety_principle=safety_principle,
                 transformation_rule=transformation_rule,
                 persona=persona,
+                use_persona_context=use_persona_context,
+                use_instruction_context=use_instruction_context,
+                use_principle_context=use_principle_context,
+                generation_seed=int(config.get("seed", 42)),
             )
             num_generated += raw_count
             num_parse_failures += parse_failures
 
-            for generated_pair in tqdm(
-                generated_pairs,
+            batch_results_all: List[Tuple[bool, str, str]] = []
+            for start in range(0, len(generated_pairs), verifier_batch_size):
+                batch_pairs = generated_pairs[start : start + verifier_batch_size]
+                batch_results_all.extend(
+                    verify_candidates_with_local_model(
+                        verifier_model=verifier_model,
+                        verifier_tokenizer=verifier_tokenizer,
+                        device=device,
+                        generated_pairs=batch_pairs,
+                        verifier_max_new_tokens=verifier_max_new_tokens,
+                    )
+                )
+
+            for generated_pair, (is_safe, verifier_output, decision_reason) in tqdm(
+                zip(generated_pairs, batch_results_all),
+                total=len(generated_pairs),
                 desc="Verify",
                 unit="pair",
                 leave=False,
@@ -495,13 +640,6 @@ def main() -> None:
                         "response": generated_pair["response"],
                         "safety_label": "unverified",
                     }
-                )
-                is_safe, verifier_output, decision_reason = verify_candidate_with_model(
-                    verifier_model=verifier_model,
-                    verifier_tokenizer=verifier_tokenizer,
-                    device=device,
-                    generated_pair=generated_pair,
-                    verifier_max_new_tokens=verifier_max_new_tokens,
                 )
                 if is_safe:
                     verified_rows.append(

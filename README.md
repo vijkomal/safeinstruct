@@ -8,7 +8,8 @@ CS224N final project: safe instruction-following with self-instruct-style data g
 
 | What | Config key | Path | Provenance |
 |------|------------|------|------------|
-| Manual seeds (curated) | `data.seeds_manual_path` | `data/seeds_manual.jsonl` | In git |
+| Principle-based manual seeds (primary) | `data.seed_principles_path` | `data/seed_principles.json` | In git |
+| Flat manual seeds (fallback) | `data.seeds_manual_path` | `data/seeds_manual.jsonl` | In git |
 | HarmfulQA seeds (regenerable) | `data.seeds_harmfulqa_path` | `data/seeds_harmfulqa.jsonl` | Run `import_harmfulqa.py` |
 | Prompts for generation (optional) | `data.prompt_source` | — | — |
 | Verified dataset (output of generation) | `data.verified_path` | `results/verified_data.jsonl` | Generated |
@@ -81,7 +82,18 @@ By default 100 examples; `HARMFULQA_LIMIT=0` imports all ~1,960. If HuggingFace 
   - Uses `data.prompt_source` prompts (e.g. `hf://declare-lab/HarmfulQA:train`) when provided
   - HF prompt sources are always loaded with streaming + random shuffle
   - Set `data.prompt_source: null` to use only seed prompts
-  - Uses merged seeds (`seeds_manual` + `seeds_harmfulqa`) as safe pivot exemplars
+  - Uses merged seeds (`seed_principles` + `seeds_harmfulqa` + optional prosocial) as safe pivot exemplars
+  - `generation.max_seeds`: 0 = use all; N = randomly sample N seeds (uses config seed for reproducibility)
+  - For principle-based seeds, the top-level `instruction` is injected into generation prompt context
+  - Prompt context toggles:
+    - `generation.use_persona_context`
+    - `generation.use_instruction_context`
+    - `generation.use_principle_context`
+    - Set any of these to `false` to disable that context block
+  - Generator output is strict JSON-only (`{"prompt": "...", "response": "..."}`); non-JSON outputs are dropped
+  - Responses are intentionally short (prompt asks for <=2 sentences); `generation.max_new_tokens` controls hard length cap
+  - Verifier is strict-label: only `PASS` or `NO_PASS` accepted
+  - `model.load_in_4bit: true` — 4-bit quantization (faster, less memory; requires CUDA; ignored on CPU/MPS)
   - Saves raw generated pairs (pre-verifier) to `results/generated_candidates.jsonl`
   - Saves rejected pairs + verifier outputs to `results/rejected_candidates.jsonl`
   - Writes verified examples to `results/verified_data.jsonl`
@@ -98,7 +110,6 @@ By default 100 examples; `HARMFULQA_LIMIT=0` imports all ~1,960. If HuggingFace 
   - Uses seed prompts as evaluation inputs
   - Runs both models: base `model.generator_name` and fine-tuned checkpoint at `train.output_dir/train.save_name`
   - Writes side-by-side generations to `results/eval_outputs.jsonl`
-  - Writes summary metrics to `results/eval_summary.json` for both models (refusal rate, avg response length)
 
 ## Layout
 
@@ -106,5 +117,5 @@ By default 100 examples; `HARMFULQA_LIMIT=0` imports all ~1,960. If HuggingFace 
 - `src/data` — data loaders and preprocessing.
 - `src/model` — generator and verifier.
 - `src/eval` — metrics and evaluation.
-- `scripts/` — `run_train.py`, `run_eval.py`, etc.
+- `scripts/` — `run_generate_verify.py`, `run_finetune.py`, `run_eval.py`, etc.
 - `results/` — checkpoints, predictions, result tables.
