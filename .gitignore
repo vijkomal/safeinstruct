@@ -32,6 +32,7 @@ env/
 *.ckpt
 cache/
 .cache/
+model/
 
 # Hugging Face local cache helpers (if created in repo)
 huggingface/
