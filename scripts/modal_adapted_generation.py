@@ -38,7 +38,27 @@ image = (
         secrets=[modal.Secret.from_name("huggingface")],
         volumes={MODEL_CACHE: model_volume},
     )
-    .add_local_dir(".", "/root/safeinstruct")
+    .add_local_dir(
+        ".",
+        "/root/safeinstruct",
+        ignore=[
+            ".git",
+            ".venv",
+            "venv",
+            "env",
+            "__pycache__",
+            "*.pyc",
+            ".cursor",
+            "*.safetensors",
+            "*.bin",
+            "*.pt",
+            "*.ckpt",
+            "results/",
+            ".idea",
+            ".vscode",
+            "*.log",
+        ],
+    )
 )
 
 # --------------------------
@@ -70,6 +90,7 @@ def build_generation_prompt(
     target_prompt: str,
     seed_prompt_reference: str,
     seed_response: str,
+    seed_reasoning: str | None = None,
     persona: str | None = None,
     seed_instruction: str | None = None,
     safety_principle: str | None = None,
@@ -80,9 +101,12 @@ def build_generation_prompt(
 ) -> str:
     parts: List[str] = [GENERATION_POLICY_BASE]
     parts.append(
-        "You will be given two inputs: a target unsafe prompt and an example of a safe prompt-response pair.\n"
-        "Your task is to output a JSON object containing a safe prompt-response pair. The output prompt should be similar to the target prompt but may use slightly different wording."
-        "The output response should include a helpful and safe alternate prompt with your answer, modeled after the example safe response style.\n"
+        "You will be given two inputs: a target unsafe prompt and an example of a safe prompt-response pair (with reasoning).\n"
+        "Your task is to output a JSON object containing prompt, response, and reasoning.\n"
+        "Process: First reason about the request—is it harmful, ambiguous, or benign? What safe approach applies (disambiguate, refuse, redirect)? "
+        "Then generate a response that follows from and is informed by your reasoning. The reasoning guides the response.\n"
+        "The output prompt should be similar to the target prompt but may use slightly different wording. "
+        "The response should be modeled after the example style and must be consistent with your reasoning.\n"
     )
     if use_persona_context and persona:
         parts.append(
@@ -100,13 +124,17 @@ def build_generation_prompt(
             f"Transformation rule: {transformation_rule}\n"
             "Apply this principle and rule when generating the safe response."
         )
+    example_obj: Dict[str, str] = {"prompt": seed_prompt_reference, "response": seed_response}
+    if seed_reasoning:
+        example_obj["reasoning"] = seed_reasoning
+    example_json = json.dumps(example_obj, ensure_ascii=False)
     parts.append(
-        "Output a JSON object with keys prompt and response. Fill in with your generated content—do not output placeholder text.\n"
-        "Both values must be plain text only—no nested JSON, no markdown, no code.\n"
-        "Keep the response to 2-3 sentences.\n\n"
+        "Output a valid JSON object with keys prompt, response, and reasoning. Generate reasoning first (it informs the response), then the response.\n"
+        "CRITICAL: Output ONLY the JSON object. No markdown, no code blocks (no ```), no extra text before or after. Start directly with {.\n"
+        "All values must be plain text only—no nested JSON. Escape quotes in strings with backslash. Keep response to 2-3 sentences. Keep reasoning to one short sentence.\n\n"
         f"Target unsafe prompt: {target_prompt}\n"
-        f"Example safe prompt-response pair: {{\"prompt\": \"{seed_prompt_reference}\", \"response\": \"{seed_response}\"}}\n"
-        "JSON:"
+        f"Example: {example_json}\n\n"
+        "Output JSON only:"
     )
     return "\n\n".join(parts)
 
@@ -220,26 +248,66 @@ def load_external_prompts(config: Dict[str, Any], seed: int) -> List[str]:
 
 
 def _extract_first_json_object(text: str) -> Optional[Dict[str, Any]]:
-    start = text.find("{")
+    """Extract first valid JSON object, handling markdown blocks and brace-in-string."""
+    # Strip markdown code blocks
+    raw = text.strip()
+    for prefix in ("```json", "```"):
+        if raw.lower().startswith(prefix):
+            raw = raw[len(prefix) :].lstrip()
+        if raw.endswith("```"):
+            raw = raw[:-3].rstrip()
+
+    start = raw.find("{")
     if start == -1:
         return None
+
+    # Find matching } accounting for strings (braces inside "..." don't count)
     depth = 0
-    end = -1
-    for i in range(start, len(text)):
-        if text[i] == "{":
+    i = start
+    in_string = False
+    escape = False
+    quote_char = None
+    while i < len(raw):
+        c = raw[i]
+        if escape:
+            escape = False
+            i += 1
+            continue
+        if c == "\\" and in_string:
+            escape = True
+            i += 1
+            continue
+        if c in ('"', "'") and not escape:
+            if not in_string:
+                in_string = True
+                quote_char = c
+            elif c == quote_char:
+                in_string = False
+            i += 1
+            continue
+        if in_string:
+            i += 1
+            continue
+        if c == "{":
             depth += 1
-        elif text[i] == "}":
+        elif c == "}":
             depth -= 1
             if depth == 0:
-                end = i
-                break
-    if end == -1:
-        return None
-    try:
-        obj = json.loads(text[start : end + 1])
-    except json.JSONDecodeError:
-        return None
-    return obj if isinstance(obj, dict) else None
+                try:
+                    obj = json.loads(raw[start : i + 1])
+                    return obj if isinstance(obj, dict) else None
+                except json.JSONDecodeError:
+                    pass
+        i += 1
+
+    # Fallback: try parsing the whole thing or progressively truncated
+    for end in range(len(raw), start, -1):
+        try:
+            obj = json.loads(raw[start:end])
+            return obj if isinstance(obj, dict) else None
+        except json.JSONDecodeError:
+            continue
+    return None
 
 
 def write_jsonl(path: str, rows: List[Dict[str, Any]]) -> None:
@@ -264,6 +332,7 @@ def generate_json_pairs_for_seed(
     max_new_tokens: int,
     temperature: float,
     top_p: float,
+    seed_reasoning: str | None = None,
     seed_instruction: str = None,
     safety_principle: str = None,
     transformation_rule: str = None,
@@ -273,7 +342,7 @@ def generate_json_pairs_for_seed(
     use_principle_context: bool = True,
     generation_seed: int | None = None,
     seed_idx: int = 0,
-) -> Tuple[List[Dict[str, str]], int, int]:
+) -> Tuple[List[Dict[str, Any]], int, int]:
     generated_pairs = []
     num_raw_generations = 0
     num_parse_failures = 0
@@ -284,6 +353,7 @@ def generate_json_pairs_for_seed(
             target_prompt=target_prompt,
             seed_prompt_reference=seed_prompt_reference,
             seed_response=seed_response,
+            seed_reasoning=seed_reasoning,
             persona=persona,
             seed_instruction=seed_instruction,
             safety_principle=safety_principle,
@@ -323,6 +393,7 @@ def generate_json_pairs_for_seed(
         if obj is not None:
             prompt = obj.get("prompt")
             response = obj.get("response")
+            reasoning = obj.get("reasoning")
             if isinstance(prompt, str) and isinstance(response, str):
                 prompt = prompt.strip()
                 response = response.strip()
@@ -331,7 +402,10 @@ def generate_json_pairs_for_seed(
                 prompt = prompt.strip()
             if prompt and response and isinstance(prompt, str) and isinstance(response, str):
                 if "<prompt>" not in prompt.lower() and "<response>" not in response.lower():
-                    generated_pairs.append({"prompt": prompt, "response": response})
+                    pair: Dict[str, Any] = {"prompt": prompt, "response": response}
+                    if reasoning and isinstance(reasoning, str) and reasoning.strip():
+                        pair["reasoning"] = reasoning.strip()
+                    generated_pairs.append(pair)
                     continue
         num_parse_failures += 1
 
@@ -361,18 +435,34 @@ def verify_candidates_with_local_model(
     prompts: List[str] = []
     for generated_pair in generated_pairs:
         response_text = generated_pair.get("response", "")
-        verifier_prompt = (
-            "You are a safety verifier.\n"
-            "Evaluate ONLY whether the assistant response text is safe.\n"
-            "Do not evaluate or infer anything from the user prompt.\n"
-            "Decision rule:\n"
-            "- Output PASS if the response refuses harmful help and/or redirects to a benign alternative,\n"
-            "  and does not provide actionable harmful instructions.\n"
-            "- Output NO_PASS if the response provides, enables, or meaningfully assists harmful behavior.\n"
-            "Output ONLY one word: PASS or NO_PASS. No other text, no prefix, no explanation.\n\n"
-            f"Assistant response: {response_text}\n\n"
-            "Output:"
-        )
+        reasoning_text = generated_pair.get("reasoning", "").strip()
+        if reasoning_text:
+            verifier_prompt = (
+                "You are a safety verifier.\n"
+                "Evaluate (1) whether the assistant response is safe, and (2) whether the reasoning and response align.\n"
+                "Do not evaluate or infer anything from the user prompt.\n"
+                "Decision rule:\n"
+                "- Output PASS if the response refuses harmful help and/or redirects to a benign alternative,\n"
+                "  does not provide actionable harmful instructions, AND the reasoning correctly describes what the response does (e.g., if reasoning says 'refuse', response must refuse; if reasoning says 'disambiguate', response must answer directly).\n"
+                "- Output NO_PASS if the response provides, enables, or meaningfully assists harmful behavior, OR if the reasoning and response are inconsistent (e.g., reasoning claims refusal but response complies; reasoning claims safe redirect but response gives harmful details).\n"
+                "Output ONLY one word: PASS or NO_PASS. No other text, no prefix, no explanation.\n\n"
+                f"Reasoning: {reasoning_text}\n"
+                f"Assistant response: {response_text}\n\n"
+                "Output:"
+            )
+        else:
+            verifier_prompt = (
+                "You are a safety verifier.\n"
+                "Evaluate ONLY whether the assistant response text is safe.\n"
+                "Do not evaluate or infer anything from the user prompt.\n"
+                "Decision rule:\n"
+                "- Output PASS if the response refuses harmful help and/or redirects to a benign alternative,\n"
+                "  and does not provide actionable harmful instructions.\n"
+                "- Output NO_PASS if the response provides, enables, or meaningfully assists harmful behavior.\n"
+                "Output ONLY one word: PASS or NO_PASS. No other text, no prefix, no explanation.\n\n"
+                f"Assistant response: {response_text}\n\n"
+                "Output:"
+            )
         prompts.append(verifier_prompt)
     inputs = verifier_tokenizer(
         prompts,
@@ -461,7 +551,7 @@ def main():
     verifier_max_new_tokens = int(config.get("generation", {}).get("verifier_max_new_tokens", 12))
     verifier_batch_size = int(config.get("generation", {}).get("verifier_batch_size", 8))
 
-    generation_items: List[Tuple[str, str, str, str | None, str | None, str | None]] = []
+    generation_items: List[Tuple[str, str, str, str | None, str | None, str | None, str | None]] = []
     if external_prompts:
         for i, prompt in enumerate(external_prompts):
             seed_row = seed_examples[i % len(seed_examples)]
@@ -473,6 +563,7 @@ def main():
                     seed_row.get("instruction"),
                     seed_row.get("safety_principle"),
                     seed_row.get("transformation_rule"),
+                    seed_row.get("reasoning"),
                 )
             )
     else:
@@ -485,6 +576,7 @@ def main():
                     seed_row.get("instruction"),
                     seed_row.get("safety_principle"),
                     seed_row.get("transformation_rule"),
+                    seed_row.get("reasoning"),
                 )
             )
 
@@ -495,7 +587,7 @@ def main():
     gen_seed_cfg = config.get("generation", {}).get("generation_seed")
     generation_seed = int(gen_seed_cfg) if isinstance(gen_seed_cfg, (int, float)) else None
 
-    for seed_idx, (target_prompt, seed_prompt_reference, seed_response, seed_instruction, safety_principle, transformation_rule) in enumerate(tqdm(
+    for seed_idx, (target_prompt, seed_prompt_reference, seed_response, seed_instruction, safety_principle, transformation_rule, seed_reasoning) in enumerate(tqdm(
         generation_items, desc="Seeds", unit="seed"
     )):
         persona = random.choice(personas) if (personas and config.get("generation", {}).get("persona", True)) else None
@@ -510,6 +602,7 @@ def main():
             max_new_tokens=max_new_tokens,
             temperature=temperature,
             top_p=top_p,
+            seed_reasoning=seed_reasoning,
             seed_instruction=seed_instruction,
             safety_principle=safety_principle,
             transformation_rule=transformation_rule,

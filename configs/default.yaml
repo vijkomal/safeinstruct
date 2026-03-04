@@ -34,9 +34,9 @@ train:
   lora_dropout: 0.05
 
 generation:
-  max_seeds: 100  # 0 = use all; N = randomly sample N seeds from loaded pool
-  num_candidates_per_seed: 1
-  max_new_tokens: 96
+  max_seeds: 10  # 0 = use all; N = randomly sample N seeds from loaded pool
+  num_candidates_per_seed: 2
+  max_new_tokens: 192  # increased for prompt+response+reasoning JSON
   temperature: 1.0  # higher = more variation (0.8–1.2)
   top_p: 0.95  # higher = wider token sampling
   verifier_max_new_tokens: 12
