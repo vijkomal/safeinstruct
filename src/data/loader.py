@@ -99,37 +99,42 @@ def load_seed_examples(
     """Load and merge seeds from manual (principles or flat) and HarmfulQA sources.
 
     Config keys:
-      - data.seed_principles_path: parameterized principles with domain instantiations (preferred)
+      - data.seeds_expanded_path: 2000+ merged seeds (principles + HarmfulQA + HarmBench) - preferred
+      - data.seed_principles_path: parameterized principles (used when seeds_expanded not set)
       - data.seeds_manual_path: flat JSONL fallback
       - data.seeds_harmfulqa_path: path to HarmfulQA import (optional)
+      - data.seeds_prosocial_path: ProsocialDialog import (optional)
 
-    Manual seeds: seed_principles_path (structured) takes precedence; seeds_manual_path used if
-    principles not set. If source_filter is set ("manual" or "harmfulqa"), only that source is loaded.
+    When seeds_expanded_path is set, it is loaded as the primary source (contains merged corpus).
+    Otherwise, principles + harmfulqa + prosocial are merged.
     """
     data_cfg = config.get("data", {})
     base = Path(data_cfg.get("base_dir", ROOT))
 
+    expanded_path = data_cfg.get("seeds_expanded_path")
     principles_path = data_cfg.get("seed_principles_path")
     manual_path = data_cfg.get("seeds_manual_path")
     harmfulqa_path = data_cfg.get("seeds_harmfulqa_path")
     prosocial_path = data_cfg.get("seeds_prosocial_path")
 
-    if not principles_path and not manual_path and not harmfulqa_path and not prosocial_path:
-        raise ValueError(
-            "No seed source configured. Set data.seed_principles_path, data.seeds_manual_path, "
-            "data.seeds_harmfulqa_path, and/or data.seeds_prosocial_path."
-        )
-
     rows: List[Dict[str, Any]] = []
-    if source_filter in (None, "manual"):
-        if principles_path:
-            rows.extend(_load_seed_principles(principles_path, base))
-        elif manual_path:
-            rows.extend(_read_jsonl(manual_path, base))
-    if harmfulqa_path and source_filter in (None, "harmfulqa"):
-        rows.extend(_read_jsonl(harmfulqa_path, base))
-    if prosocial_path and source_filter in (None, "prosocial"):
-        rows.extend(_read_jsonl(prosocial_path, base))
+    if expanded_path and (base / expanded_path).exists():
+        rows.extend(_read_jsonl(expanded_path, base))
+    else:
+        if not principles_path and not manual_path and not harmfulqa_path and not prosocial_path:
+            raise ValueError(
+                "No seed source configured. Set data.seeds_expanded_path, data.seed_principles_path, "
+                "data.seeds_manual_path, data.seeds_harmfulqa_path, and/or data.seeds_prosocial_path."
+            )
+        if source_filter in (None, "manual"):
+            if principles_path:
+                rows.extend(_load_seed_principles(principles_path, base))
+            elif manual_path:
+                rows.extend(_read_jsonl(manual_path, base))
+        if harmfulqa_path and source_filter in (None, "harmfulqa"):
+            rows.extend(_read_jsonl(harmfulqa_path, base))
+        if prosocial_path and source_filter in (None, "prosocial"):
+            rows.extend(_read_jsonl(prosocial_path, base))
     # Deduplicate by (prompt, response) - keep first occurrence
     seen: set[tuple[str, str]] = set()
     deduped: List[Dict[str, Any]] = []
