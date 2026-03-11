@@ -2,8 +2,9 @@ seed: 42
 device: cpu  # "cuda" | "cpu" | "mps" | null (auto prefers cuda if available, else cpu)
 
 data:
-  # Seed sources (merged at load time). Use seeds_expanded for 2000+ corpus (run build_seed_corpus.py first).
-  seeds_expanded_path: "data/seeds_expanded.jsonl"  # 2000+ seeds: principles + HarmfulQA + HarmBench refusals
+  # Seed sources (merged at load time). Use seeds_expanded for corpus (run build_seed_corpus.py first).
+  # HarmBench excluded to avoid eval leakage.
+  seeds_expanded_path: "data/seeds_expanded.jsonl"  # principles + HarmfulQA + template expansion
   # Fallback when seeds_expanded not used:
   seed_principles_path: "data/seed_principles.json"
   # seeds_manual_path: "data/seeds_manual.jsonl"
@@ -36,7 +37,10 @@ train:
   lora_dropout: 0.05
 
 generation:
-  max_seeds: 10  # 0 = use all; N = randomly sample N seeds from loaded pool
+  # Use HarmfulQA prompts as targets + principle responses as reference (avoids HarmBench leakage).
+  use_harmfulqa_prompts_with_principles: true
+  harmfulqa_prompts_limit: 0  # 0 = use all HarmfulQA prompts
+  max_seeds: 10  # 0 = use all; N = randomly sample N seeds from loaded pool (legacy mode)
   num_candidates_per_seed: 2
   max_new_tokens: 192  # increased for prompt+response+reasoning JSON
   temperature: 1.0  # higher = more variation (0.8–1.2)

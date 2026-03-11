@@ -214,6 +214,46 @@ def _extract_prompt_from_row(row: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def load_harmfulqa_prompts(base: Path, limit: int = 0) -> List[str]:
+    """Load HarmfulQA prompts only (no responses). Used with use_harmfulqa_prompts_with_principles."""
+    path = base / "data" / "seeds_harmfulqa.jsonl"
+    if not path.exists():
+        return []
+    prompts = []
+    with open(path) as f:
+        for line in f:
+            if not line.strip():
+                continue
+            r = json.loads(line)
+            p = (r.get("prompt") or "").strip()
+            if p:
+                prompts.append(p)
+            if limit > 0 and len(prompts) >= limit:
+                break
+    return prompts
+
+
+def load_principle_references(base: Path) -> List[Dict[str, Any]]:
+    """Load principle (prompt, response) pairs for reference. From seed_principles.json."""
+    path = base / "data" / "seed_principles.json"
+    if not path.exists():
+        return []
+    with open(path) as f:
+        data = json.load(f)
+    refs = []
+    for p in data.get("principles", []):
+        for inst in p.get("domain_instantiations", []):
+            refs.append({
+                "prompt": inst.get("prompt", "").strip(),
+                "response": inst.get("response", "").strip(),
+                "safety_principle": p.get("safety_principle"),
+                "transformation_rule": p.get("transformation_rule"),
+                "instruction": p.get("instruction"),
+                "reasoning": inst.get("reasoning"),
+            })
+    return [r for r in refs if r["prompt"] and r["response"]]
+
+
 def load_external_prompts(
     config: Dict[str, Any],
     seed: int,
@@ -628,7 +668,34 @@ def main() -> None:
                     )
     else:
         generation_items: List[Tuple[str, str, str, str | None, str | None, str | None, str | None]] = []
-        if external_prompts:
+        use_hq_plus_principles = config.get("generation", {}).get("use_harmfulqa_prompts_with_principles", False)
+        hq_limit = int(config.get("generation", {}).get("harmfulqa_prompts_limit", 0))
+
+        if use_hq_plus_principles:
+            # HarmfulQA prompts as targets + sample 1 of ~20 principle responses as reference
+            harmfulqa_prompts = load_harmfulqa_prompts(ROOT, limit=hq_limit)
+            principle_refs = load_principle_references(ROOT)
+            if not harmfulqa_prompts:
+                raise ValueError("use_harmfulqa_prompts_with_principles=True but no HarmfulQA prompts in data/seeds_harmfulqa.jsonl")
+            if not principle_refs:
+                raise ValueError("use_harmfulqa_prompts_with_principles=True but no principles in data/seed_principles.json")
+            rng = random.Random(int(config.get("seed", 42)))
+            rng.shuffle(harmfulqa_prompts)
+            for target_prompt in harmfulqa_prompts:
+                ref = rng.choice(principle_refs)
+                generation_items.append(
+                    (
+                        target_prompt,
+                        ref["prompt"],
+                        ref["response"],
+                        ref.get("instruction"),
+                        ref.get("safety_principle"),
+                        ref.get("transformation_rule"),
+                        ref.get("reasoning"),
+                    )
+                )
+            print(f"[INFO] Mode: HarmfulQA prompts ({len(harmfulqa_prompts)}) + principle references ({len(principle_refs)})")
+        elif external_prompts:
             # Use external prompts for diversity while modeling response style on seeds.
             for i, prompt in enumerate(external_prompts):
                 seed_row = seed_examples[i % len(seed_examples)]

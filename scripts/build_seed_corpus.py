@@ -1,32 +1,21 @@
 #!/usr/bin/env python3
-"""Build a 2000+ seed corpus by merging: seed_principles, HarmfulQA, HarmBench refusals, and template expansion.
+"""Build seed corpus by merging: seed_principles, HarmfulQA, and template expansion.
+
+HarmBench is EXCLUDED to avoid eval leakage (training on HarmBench prompts inflates eval scores).
 
 Output: data/seeds_expanded.jsonl
 Usage:
   python scripts/build_seed_corpus.py [--target 2100]
-  # Requires: HarmfulQA import (HARMFULQA_LIMIT=0), HarmBench CSV in data/harmbench_cache/
+  # Requires: HarmfulQA import (HARMFULQA_LIMIT=0) via scripts/import_harmfulqa.py
 """
 
 import argparse
-import csv
 import json
-import os
 import random
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 ROOT = Path(__file__).resolve().parents[1]
-
-# HarmBench category -> refusal response template
-HARMBENCH_REFUSAL_TEMPLATES = {
-    "chemical_biological": "I can't provide that information. Dual-use chemistry and biology have serious safety implications. I can discuss regulatory frameworks, biosafety principles, or career paths in regulated research at a high level.",
-    "illegal": "I can't help with that. That would be illegal. I can suggest lawful alternatives, reporting channels, or professional advice if you're facing a difficult situation.",
-    "misinformation_disinformation": "I can't help create or spread misinformation. I can explain how to evaluate sources, fact-check claims, or write accurate, well-sourced content.",
-    "harassment_bullying": "I can't help with harassment or bullying. I can suggest conflict resolution, HR channels, or resources for healthy communication.",
-    "harmful": "I can't help with that. If you're in distress, please reach out to a crisis helpline (988 in the US) or a trusted professional. I can point you to support resources.",
-    "cybercrime_intrusion": "I can't help with unauthorized access or cybercrime. I can explain how to secure your own systems, recognize threats, or report incidents to authorities.",
-    "copyright": "I can't help reproduce copyrighted material without permission. I can discuss fair use, licensing, or how to obtain proper permissions.",
-}
 
 
 def load_seed_principles(base: Path) -> List[Dict]:
@@ -70,33 +59,6 @@ def load_harmfulqa(base: Path, limit: int = 0) -> List[Dict]:
     return rows
 
 
-def load_harmbench_refusals(base: Path, limit: int = 0) -> List[Dict]:
-    """Convert HarmBench behaviors to refusal seeds. Requires harmbench_behaviors_text_all.csv."""
-    cache = base / "data" / "harmbench_cache" / "harmbench_behaviors_text_all.csv"
-    if not cache.exists():
-        return []
-    rows = []
-    with open(cache) as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            behavior = (row.get("Behavior") or "").strip()
-            if not behavior:
-                continue
-            cat = (row.get("SemanticCategory") or "").strip() or "illegal"
-            response = HARMBENCH_REFUSAL_TEMPLATES.get(cat, HARMBENCH_REFUSAL_TEMPLATES["illegal"])
-            rows.append({
-                "prompt": behavior,
-                "response": response,
-                "reasoning": f"HarmBench {cat}; refuse and redirect.",
-                "safety_label": "safe",
-                "source": "harmbench",
-                "principle_id": f"HB_{cat}",
-            })
-            if limit > 0 and len(rows) >= limit:
-                break
-    return rows
-
-
 def run_template_expansion(base: Path, target: int, rng: random.Random) -> List[Dict]:
     """Run the template-based expansion (from generate_seed_expansion)."""
     import importlib.util
@@ -131,7 +93,6 @@ def main():
     parser.add_argument("--target", type=int, default=2100)
     parser.add_argument("--output", type=str, default="data/seeds_expanded.jsonl")
     parser.add_argument("--harmfulqa-limit", type=int, default=0, help="0 = use all")
-    parser.add_argument("--harmbench-limit", type=int, default=0, help="0 = use all")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -150,12 +111,7 @@ def main():
     all_rows.extend(hq_rows)
     print(f"Loaded {len(hq_rows)} from seeds_harmfulqa.jsonl")
 
-    # 3. HarmBench refusals (~400)
-    hb_rows = load_harmbench_refusals(base, limit=args.harmbench_limit)
-    all_rows.extend(hb_rows)
-    print(f"Loaded {len(hb_rows)} from HarmBench (refusal templates)")
-
-    # 4. Template expansion (fill to target)
+    # 3. Template expansion (fill to target) — HarmBench excluded to avoid eval leakage
     need = max(0, args.target - len(all_rows))
     if need > 0:
         exp_rows = run_template_expansion(base, need, rng)
