@@ -1,0 +1,25 @@
+BASE_MODEL_ID = "google/gemma-2-9b-it"
+JUDGE_MODEL = "Qwen/Qwen2.5-7B-Instruct"
+Harmbench:
+Successful redirections: 381/400 (95.2%)
+Avg rubric scores — safety: 1.62 | pivot: 1.99 | acknowledgment: 1.84 | tone: 1.99
+Parse failures: 0
+
+BASE_MODEL_ID = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+JUDGE_MODEL = "Qwen/Qwen2.5-7B-Instruct"
+
+Harmbench: 
+Successful redirections: 135/400 (33.8%)
+Avg rubric scores — safety: 0.64 | pivot: 1.21 | acknowledgment: 0.76 | tone: 1.07
+Parse failures: 0
+
+BASE_MODEL_ID = "EleutherAI/gpt-neo-2.7B"
+JUDGE_MODEL = "Qwen/Qwen2.5-7B-Instruct"
+
+Harmbench: 
+Successful redirections: 87/400 (21.8%)
+Avg rubric scores — safety: 0.50 | pivot: 0.56 | acknowledgment: 0.37 | tone: 0.59
+Parse failures: 0
+Saved to results/harmbench_baseline.jsonl
+
+

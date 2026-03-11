@@ -23,7 +23,7 @@ image = (
 
 vol = modal.Volume.from_name("ft-model", create_if_missing=True)
 
-BASE_MODEL_ID = "google-bert/bert-large-cased"
+BASE_MODEL_ID = "EleutherAI/gpt-neo-2.7B"
 FT_MODEL_PATH = "/model/model"
 
 JUDGE_MODEL = "Qwen/Qwen2.5-7B-Instruct"
