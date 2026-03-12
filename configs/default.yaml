@@ -1,5 +1,5 @@
 seed: 42
-device: cpu  # "cuda" | "cpu" | "mps" | null (auto prefers cuda if available, else cpu)
+device: null  # "cuda" | "cpu" | "mps" | null (auto: cuda > mps > cpu)
 
 data:
   # Seed sources (merged at load time). Principles = parameterized rules + domain instantiations.
@@ -11,8 +11,8 @@ data:
   # seeds_prosocial_path: "data/seeds_prosocial.jsonl"
   # prompt_source: "hf://declare-lab/HarmfulQA:train"  # null for no external prompts
   prompt_source: null
-  verified_path: "results/verified_data.jsonl"
-  val_ratio: 0.2
+  verified_path: "results/verified_data.jsonl"  # or verified_filtered.jsonl for quality-filtered subset
+  val_ratio: 0.1  # 10% held out for validation
 
 model:
   # Any HuggingFace causal LM. Examples: google/gemma-2-2b, EleutherAI/gpt-neo-125M, TinyLlama/TinyLlama-1.1B-Chat-v1.0
@@ -26,10 +26,10 @@ model:
   load_in_4bit: false  # true causes .to() error with bitsandbytes in Modal; TinyLlama 1.1B fits without it
 
 train:
-  batch_size: 2
-  grad_accum_steps: 1  # effective batch = batch_size * grad_accum_steps
-  learning_rate: 2e-5
-  num_epochs: 3
+  batch_size: 4
+  grad_accum_steps: 4  # effective batch = 16 (research standard for 1B models)
+  learning_rate: 2e-4  # LoRA typically uses 1e-4 to 2e-4; full ft uses 2e-5
+  num_epochs: 5
   max_length: 512
   output_dir: "results/checkpoints"
   save_name: "generator_single_layer_ft"
@@ -39,6 +39,12 @@ train:
   lora_r: 8
   lora_alpha: 16
   lora_dropout: 0.05
+  warmup_ratio: 0.1  # linear warmup over first 10% of steps
+  use_bf16: true  # mixed precision (cuda only); bf16 preferred on Ampere+
+  use_fp16: false  # fallback if bf16 unsupported
+  grad_checkpointing: false  # true to reduce memory (slower)
+  early_stopping_patience: 2  # stop if no val improvement for N epochs; 0 = disabled
+  save_best: true  # save checkpoint when val loss improves
 
 generation:
   max_seeds: 0  # 0 = use all; N = randomly sample N seeds from loaded pool
