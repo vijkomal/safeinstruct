@@ -50,7 +50,7 @@ def _get_last_safe_response(blue_conversations) -> Optional[str]:
 
 
 def main() -> None:
-    limit = int(os.environ.get("HARMFULQA_LIMIT", "100"))  # 0 = use all ~1960
+    limit = int(os.environ.get("HARMFULQA_LIMIT", "0"))  # 0 = use all ~1960
     seed = int(os.environ.get("SEED", "42"))
     output_path = ROOT / "data" / "seeds_harmfulqa.jsonl"
 
