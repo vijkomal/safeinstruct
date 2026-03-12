@@ -25,6 +25,7 @@ image = (
         "tqdm",
         "pyyaml",
         "huggingface_hub",
+        "matplotlib",
     )
     .add_local_dir(
         ".",
@@ -137,6 +138,7 @@ def finetune() -> None:
     grad_checkpointing = bool(train_cfg.get("grad_checkpointing", False))
     early_stopping_patience = int(train_cfg.get("early_stopping_patience", 2))
     save_best = bool(train_cfg.get("save_best", True))
+    save_plots = bool(train_cfg.get("save_plots", True))
     seed = int(config.get("seed", 42))
 
     output_dir = str(ROOT / train_cfg.get("output_dir", "results/checkpoints"))
@@ -210,6 +212,8 @@ def finetune() -> None:
 
     best_val_loss = float("inf")
     patience_counter = 0
+    train_losses: List[float] = []
+    val_losses: List[float] = []
 
     for epoch in range(num_epochs):
         model.train()
@@ -268,6 +272,7 @@ def finetune() -> None:
                 optimizer.zero_grad()
 
         avg_loss = running_loss / max(1, len(batches))
+        train_losses.append(avg_loss)
         print(f"Epoch {epoch + 1} train loss: {avg_loss:.4f}")
 
         val_loss = float("inf")
@@ -297,7 +302,10 @@ def finetune() -> None:
                     val_loss += float(out.loss.item())
             val_batches = len(batchify(val_examples, batch_size))
             val_loss /= max(1, val_batches)
+            val_losses.append(val_loss)
             print(f"Epoch {epoch + 1} val loss: {val_loss:.4f}")
+        else:
+            val_losses.append(float("nan"))
 
         if save_best and val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -324,6 +332,29 @@ def finetune() -> None:
     else:
         model.save_pretrained(save_path)
         tokenizer.save_pretrained(save_path)
+
+    if save_plots and train_losses:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        fig, ax = plt.subplots(figsize=(6, 4))
+        epochs_x = list(range(1, len(train_losses) + 1))
+        ax.plot(epochs_x, train_losses, "b-o", label="Train", markersize=4)
+        if val_losses and any(v == v for v in val_losses):
+            valid_val = [(e, v) for e, v in zip(epochs_x, val_losses) if v == v]
+            if valid_val:
+                ex, vx = zip(*valid_val)
+                ax.plot(ex, vx, "r-s", label="Val", markersize=4)
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel("Loss")
+        ax.legend()
+        ax.set_title(f"Training curves ({model_name})")
+        fig.tight_layout()
+        plot_path = os.path.join(output_dir, "training_curves.png")
+        fig.savefig(plot_path, dpi=150)
+        plt.close()
+        print(f"Saved training curves to: {plot_path}")
 
     results_volume.commit()
     print(f"Checkpoints saved to volume (results/checkpoints/{save_name})")

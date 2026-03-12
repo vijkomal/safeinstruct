@@ -45,6 +45,7 @@ train:
   grad_checkpointing: false  # true to reduce memory (slower)
   early_stopping_patience: 2  # stop if no val improvement for N epochs; 0 = disabled
   save_best: true  # save checkpoint when val loss improves
+  save_plots: true  # save train/val loss curve to output_dir
 
 generation:
   max_seeds: 0  # 0 = use all; N = randomly sample N seeds from loaded pool
