@@ -19,10 +19,10 @@ model:
   # Override via GENERATOR_MODEL / VERIFIER_MODEL env vars (e.g. modal run -e GENERATOR_MODEL=TinyLlama/TinyLlama-1.1B-Chat-v1.0)
   # generator_name: "google/gemma-2-2b"
   # verifier_name: "google/gemma-2-2b"
-  # generator_name: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-  # verifier_name: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-  generator_name: "EleutherAI/gpt-neo-2.7b"
-  verifier_name: "EleutherAI/gpt-neo-2.7b"
+  generator_name: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+  verifier_name: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+  # generator_name: "EleutherAI/gpt-neo-2.7b"
+  # verifier_name: "EleutherAI/gpt-neo-2.7b"
   load_in_4bit: false  # true causes .to() error with bitsandbytes in Modal; TinyLlama 1.1B fits without it
 
 train:
@@ -42,6 +42,7 @@ train:
 
 generation:
   max_seeds: 0  # 0 = use all; N = randomly sample N seeds from loaded pool
+  chunk_size: 100  # prompts per Modal container (CHUNK_SIZE env overrides)
   num_candidates_per_seed: 3  # try up to 3 times; take first valid (reduces parse failures)
   response_max_length: 800  # char limit for response (schema truncation)
   reasoning_max_length: 500  # char limit for reasoning (schema truncation)

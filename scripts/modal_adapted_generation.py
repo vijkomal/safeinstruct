@@ -711,8 +711,11 @@ def verify_candidates_with_local_model(
 
 
 # --------------------------
-# Modal entrypoint
+# Modal entrypoint: chunked processing
 # --------------------------
+
+CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", "50"))  # prompts per container
+
 
 @app.function(
     image=image,
@@ -722,16 +725,30 @@ def verify_candidates_with_local_model(
         MODEL_CACHE: model_volume,
         "/root/results": results_volume,
     },
-    timeout=86400,  # 24h max (Modal limit)
+    timeout=7200,  # 2h per chunk (50 prompts ~25-40 min)
 )
-def main():
+def process_chunk(chunk_id: int, target_prompts: List[str]):
+    """Process a chunk of target prompts: classify+sample, generate, verify. Writes to chunk_{id}_*.jsonl."""
     from tqdm import tqdm
+
+    if not target_prompts:
+        return
+
+    results_volume.reload()  # get latest from previous runs for resume check
+    results_dir = "/root/results"
+    chunk_prefix = f"{results_dir}/chunk_{chunk_id}"
+    gen_path = f"{chunk_prefix}_generated.jsonl"
+    # Skip if already done (resume: delete chunk_N_*.jsonl to retry)
+    existing = read_jsonl(gen_path)
+    if len(existing) >= len(target_prompts) * 0.95:  # allow ~5% parse failures
+        print(f"[CHUNK {chunk_id}] Already complete ({len(existing)}/{len(target_prompts)}), skipping")
+        return
 
     token = os.getenv("HF_TOKEN")
     config_path = ROOT / "configs" / "default.yaml"
     config = load_config(str(config_path))
     device = resolve_device()
-    rng = random.Random(int(config.get("seed", 42)))
+    rng = random.Random(int(config.get("seed", 42)) + chunk_id * 1000)
 
     generator_name = os.environ.get("GENERATOR_MODEL") or config["model"]["generator_name"]
     verifier_name = (
@@ -740,10 +757,7 @@ def main():
         or config["model"].get("verifier_name")
         or generator_name
     )
-    config.setdefault("model", {})["generator_name"] = generator_name
-    config.setdefault("model", {})["verifier_name"] = verifier_name
 
-    # Download models to cache (runtime; supports any HuggingFace model)
     ensure_model_cached(generator_name, token=token)
     if verifier_name != generator_name:
         ensure_model_cached(verifier_name, token=token)
@@ -759,28 +773,11 @@ def main():
             verifier_name, device, token=token, load_in_4bit=load_in_4bit
         )
 
-    # 1. Load harmfulqa prompts as target prompts (iterate all)
-    harmfulqa_path = config.get("data", {}).get("seeds_harmfulqa_path", "data/seeds_harmfulqa.jsonl")
-    harmfulqa_path = str(ROOT / harmfulqa_path) if not os.path.isabs(harmfulqa_path) else harmfulqa_path
-    harmfulqa_rows = read_jsonl(harmfulqa_path)
-    target_prompts: List[str] = []
-    for row in harmfulqa_rows:
-        p = _extract_prompt_from_row(row)
-        if p:
-            target_prompts.append(p)
-    max_seeds = int(config.get("generation", {}).get("max_seeds", 0))
-    if max_seeds > 0 and len(target_prompts) > max_seeds:
-        target_prompts = rng.sample(target_prompts, max_seeds)
-        print(f"[INFO] max_seeds={max_seeds}: sampled {len(target_prompts)} target prompts from harmfulqa")
-    else:
-        print(f"[INFO] Loaded {len(target_prompts)} target prompts from harmfulqa")
-
-    # 2. Load principle mapping and write simple principle_id -> safety_principle mapping
     principles_path = config.get("data", {}).get("seed_principles_path", "data/seed_principles.json")
     id_to_principle, id_to_rule, id_to_instantiations = load_principle_mapping(principles_path)
-    mapping_out = config.get("data", {}).get("principle_id_mapping_path", "data/principle_id_mapping.json")
-    write_principle_id_mapping(id_to_principle, mapping_out)
-    print(f"[INFO] Wrote principle_id -> safety_principle mapping to {mapping_out}")
+    if chunk_id == 0:
+        mapping_out = config.get("data", {}).get("principle_id_mapping_path", "data/principle_id_mapping.json")
+        write_principle_id_mapping(id_to_principle, mapping_out)
 
     principle_ids = [p for p in id_to_principle.keys() if id_to_instantiations.get(p)]
 
@@ -811,9 +808,9 @@ def main():
         else:
             print("[INFO] Grammar-constrained decoding enabled (lm-format-enforcer generate_enforced)")
 
-    # 3. For each target prompt: classify principle, sample reference, build generation items
+    # Classify+sample for this chunk's prompts
     generation_items: List[Tuple[str, str, str, str | None, str | None, str | None, str | None, tuple[str, str, str | None] | None]] = []
-    for target_prompt in tqdm(target_prompts, desc="Classify+sample", unit="prompt"):
+    for target_prompt in tqdm(target_prompts, desc=f"Chunk{chunk_id} classify", unit="prompt"):
         principle_id = classify_principle_for_prompt(
             model=model,
             tokenizer=tokenizer,
@@ -863,7 +860,7 @@ def main():
     generation_seed = int(gen_seed_cfg) if isinstance(gen_seed_cfg, (int, float)) else None
 
     for seed_idx, (target_prompt, seed_prompt_reference, seed_response, seed_instruction, safety_principle, transformation_rule, seed_reasoning, second_example_tuple) in enumerate(tqdm(
-        generation_items, desc="Seeds", unit="seed"
+        generation_items, desc=f"Chunk{chunk_id} seeds", unit="seed"
     )):
         persona = random.choice(personas) if (personas and config.get("generation", {}).get("persona", True)) else None
         generated_pairs, _, _ = generate_json_pairs_for_seed(
@@ -926,17 +923,99 @@ def main():
                     "decision_reason": decision_reason,
                 })
 
-    verified_path = config.get("data", {}).get("verified_path", "results/verified_data.jsonl")
-    parse_failures_path = config.get("generation", {}).get("parse_failures_path", "results/parse_failures.jsonl")
-    write_jsonl("/root/results/generated_candidates.jsonl", generated_rows)
-    write_jsonl("/root/results/rejected_candidates.jsonl", rejected_rows)
-    write_jsonl(f"/root/results/{os.path.basename(verified_path)}", verified_rows)
-    write_jsonl(f"/root/results/{os.path.basename(parse_failures_path)}", parse_failures)
+    write_jsonl(gen_path, generated_rows)
+    write_jsonl(f"{chunk_prefix}_rejected.jsonl", rejected_rows)
+    write_jsonl(f"{chunk_prefix}_verified.jsonl", verified_rows)
+    write_jsonl(f"{chunk_prefix}_parse_failures.jsonl", parse_failures)
+    results_volume.commit()
+    print(f"[CHUNK {chunk_id}] Done. {len(verified_rows)} safe / {len(rejected_rows)} rejected / {len(generated_rows)} total. {len(parse_failures)} parse failures")
+
+
+@app.function(
+    image=image,
+    volumes={"/root/results": results_volume},
+    timeout=600,
+)
+def merge_chunks(num_chunks: int):
+    """Merge chunk_*_*.jsonl files into final output files."""
+    results_dir = "/root/results"
+    results_volume.reload()
+
+    generated_rows: List[Dict[str, Any]] = []
+    rejected_rows: List[Dict[str, Any]] = []
+    verified_rows: List[Dict[str, Any]] = []
+    parse_failures: List[Dict[str, Any]] = []
+
+    for i in range(num_chunks):
+        for suffix, lst in [
+            ("_generated.jsonl", generated_rows),
+            ("_rejected.jsonl", rejected_rows),
+            ("_verified.jsonl", verified_rows),
+            ("_parse_failures.jsonl", parse_failures),
+        ]:
+            path = f"{results_dir}/chunk_{i}{suffix}"
+            if os.path.exists(path):
+                lst.extend(read_jsonl(path))
+
+    verified_path = "results/verified_data.jsonl"
+    parse_failures_path = "results/parse_failures.jsonl"
+    write_jsonl(f"{results_dir}/generated_candidates.jsonl", generated_rows)
+    write_jsonl(f"{results_dir}/rejected_candidates.jsonl", rejected_rows)
+    write_jsonl(f"{results_dir}/{os.path.basename(verified_path)}", verified_rows)
+    write_jsonl(f"{results_dir}/{os.path.basename(parse_failures_path)}", parse_failures)
+
+    # Remove chunk files to avoid confusion on re-run
+    for i in range(num_chunks):
+        for suffix in ["_generated.jsonl", "_rejected.jsonl", "_verified.jsonl", "_parse_failures.jsonl"]:
+            path = f"{results_dir}/chunk_{i}{suffix}"
+            if os.path.exists(path):
+                os.remove(path)
 
     results_volume.commit()
-    print(f"Done. {len(verified_rows)} safe / {len(rejected_rows)} rejected / {len(generated_rows)} total. {len(parse_failures)} parse failures -> {os.path.basename(parse_failures_path)}")
+    print(f"[MERGE] Done. {len(verified_rows)} verified / {len(rejected_rows)} rejected / {len(generated_rows)} generated / {len(parse_failures)} parse failures")
 
 
 @app.local_entrypoint()
 def run():
-    main.remote()
+    """Load prompts, split into chunks, run in parallel, merge results."""
+    import yaml
+
+    config_path = Path(__file__).resolve().parents[1] / "configs" / "default.yaml"
+    with open(config_path, "r", encoding="utf-8") as f:
+        config = yaml.safe_load(f)
+
+    harmfulqa_path = config.get("data", {}).get("seeds_harmfulqa_path", "data/seeds_harmfulqa.jsonl")
+    base = Path(__file__).resolve().parents[1]
+    full_path = base / harmfulqa_path if not str(harmfulqa_path).startswith("/") else Path(harmfulqa_path)
+    harmfulqa_rows = read_jsonl(str(full_path))
+
+    target_prompts: List[str] = []
+    for row in harmfulqa_rows:
+        p = _extract_prompt_from_row(row)
+        if p:
+            target_prompts.append(p)
+
+    max_seeds = int(config.get("generation", {}).get("max_seeds", 0))
+    if max_seeds > 0 and len(target_prompts) > max_seeds:
+        rng = random.Random(int(config.get("seed", 42)))
+        target_prompts = rng.sample(target_prompts, max_seeds)
+        print(f"[INFO] max_seeds={max_seeds}: sampled {len(target_prompts)} target prompts")
+    else:
+        print(f"[INFO] Loaded {len(target_prompts)} target prompts")
+
+    chunk_size = int(os.environ.get("CHUNK_SIZE") or config.get("generation", {}).get("chunk_size", CHUNK_SIZE))
+    chunks: List[Tuple[int, List[str]]] = []
+    for i in range(0, len(target_prompts), chunk_size):
+        chunk_prompts = target_prompts[i : i + chunk_size]
+        chunks.append((len(chunks), chunk_prompts))
+
+    print(f"[INFO] Split into {len(chunks)} chunks (CHUNK_SIZE={chunk_size})")
+    if not chunks:
+        print("[INFO] No prompts to process")
+        return
+
+    # Run chunks in parallel (Modal spawns multiple containers)
+    list(process_chunk.starmap(chunks))
+
+    # Merge chunk outputs into final files
+    merge_chunks.remote(len(chunks))
