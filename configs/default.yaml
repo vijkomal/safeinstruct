@@ -4,6 +4,7 @@ device: cpu  # "cuda" | "cpu" | "mps" | null (auto prefers cuda if available, el
 data:
   # Seed sources (merged at load time). Principles = parameterized rules + domain instantiations.
   seed_principles_path: "data/seed_principles.json"
+  principle_id_mapping_path: "data/principle_id_mapping.json"  # simple principle_id -> safety_principle
   # seeds_manual_path: "data/seeds_manual.jsonl"  # flat fallback if no principles
   seeds_harmfulqa_path: "data/seeds_harmfulqa.jsonl"
   # ProsocialDialog (safety rationale + RoTs). Run: PROSOCIAL_LIMIT=200 python scripts/import_prosocial.py
@@ -14,9 +15,15 @@ data:
   val_ratio: 0.2
 
 model:
-  generator_name: "google/gemma-2-2b"
-  verifier_name: "google/gemma-2-2b"
-  load_in_4bit: false  # true = 4-bit quantization (faster, less memory; best on CUDA)
+  # Any HuggingFace causal LM. Examples: google/gemma-2-2b, EleutherAI/gpt-neo-125M, TinyLlama/TinyLlama-1.1B-Chat-v1.0
+  # Override via GENERATOR_MODEL / VERIFIER_MODEL env vars (e.g. modal run -e GENERATOR_MODEL=TinyLlama/TinyLlama-1.1B-Chat-v1.0)
+  # generator_name: "google/gemma-2-2b"
+  # verifier_name: "google/gemma-2-2b"
+  # generator_name: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+  # verifier_name: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+  generator_name: "EleutherAI/gpt-neo-2.7b"
+  verifier_name: "EleutherAI/gpt-neo-2.7b"
+  load_in_4bit: false  # true causes .to() error with bitsandbytes in Modal; TinyLlama 1.1B fits without it
 
 train:
   batch_size: 2
@@ -34,22 +41,32 @@ train:
   lora_dropout: 0.05
 
 generation:
-  max_seeds: 10  # 0 = use all; N = randomly sample N seeds from loaded pool
-  num_candidates_per_seed: 2
-  max_new_tokens: 192  # increased for prompt+response+reasoning JSON
-  temperature: 1.0  # higher = more variation (0.8–1.2)
-  top_p: 0.95  # higher = wider token sampling
+  max_seeds: 0  # 0 = use all; N = randomly sample N seeds from loaded pool
+  num_candidates_per_seed: 3  # try up to 3 times; take first valid (reduces parse failures)
+  response_max_length: 800  # char limit for response (schema truncation)
+  reasoning_max_length: 500  # char limit for reasoning (schema truncation)
+  # max_new_tokens derived as (response_max_length + reasoning_max_length + 80) // 3
+  temperature: 0.4  # lower = less repetition, more focused (0.3–0.5 for small models)
+  top_p: 0.9  # slightly lower reduces degenerate sampling
+  repetition_penalty: 1.15  # reduces "I don't know. I don't know."-style loops
+  no_repeat_ngram_size: 3  # prevents 3-gram repetition (0 = disabled)
   verifier_max_new_tokens: 12
   verifier_batch_size: 8
+  verifier_unparsed_as_pass: true  # when verifier fails to output PASS/NO_PASS, accept (less strict)
   verify_only_from_generated_candidates: false
   persona: false  # use random persona for prompt diversity
   use_persona_context: true
   use_instruction_context: true
   use_principle_context: true
+  use_example: true  # small models need examples to learn the pattern
+  use_two_examples: false  # 2 examples reinforces structure, reduces copy of one
+  use_template_format: true  # two-sentence structure; no brackets (model was copying them)
+  use_grammar_constraint: true  # true = lm-format-enforcer guarantees valid JSON (slower)
   external_prompt_limit: 50
   generation_seed: null  # null = no seed (max variation); int = reproducible
   generated_candidates_path: "results/generated_candidates.jsonl"
   rejected_candidates_path: "results/rejected_candidates.jsonl"
+  parse_failures_path: "results/parse_failures.jsonl"  # raw outputs rejected by parser (for debugging)
   # Personas to ensure diverse unsafe prompt representation (avoids model collapse).
   personas:
     - "a curious 10-year-old"

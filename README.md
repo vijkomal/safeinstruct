@@ -91,7 +91,7 @@ By default 100 examples; `HARMFULQA_LIMIT=0` imports all ~1,960. If HuggingFace 
     - `generation.use_principle_context`
     - Set any of these to `false` to disable that context block
   - Generator output is strict JSON-only (`{"prompt": "...", "response": "..."}`); non-JSON outputs are dropped
-  - Responses are intentionally short (prompt asks for <=2 sentences); `generation.max_new_tokens` controls hard length cap
+  - Responses are intentionally short (prompt asks for <=2 sentences); `generation.response_max_length` and `reasoning_max_length` control schema limits (max_new_tokens derived from these)
   - Verifier is strict-label: only `PASS` or `NO_PASS` accepted
   - `model.load_in_4bit: true` — 4-bit quantization (faster, less memory; requires CUDA; ignored on CPU/MPS)
   - Saves raw generated pairs (pre-verifier) to `results/generated_candidates.jsonl`

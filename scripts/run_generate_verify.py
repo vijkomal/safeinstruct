@@ -507,7 +507,9 @@ def main() -> None:
     config.setdefault("model", {})["verifier_name"] = verifier_name
 
     num_candidates = int(config.get("generation", {}).get("num_candidates_per_seed", 3))
-    max_new_tokens = int(config.get("generation", {}).get("max_new_tokens", 96))
+    response_max_length = int(config.get("generation", {}).get("response_max_length", 800))
+    reasoning_max_length = int(config.get("generation", {}).get("reasoning_max_length", 500))
+    max_new_tokens = (response_max_length + reasoning_max_length + 80) // 3
     temperature = float(config.get("generation", {}).get("temperature", 0.8))
     top_p = float(config.get("generation", {}).get("top_p", 0.95))
     verifier_max_new_tokens = int(
