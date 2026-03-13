@@ -29,7 +29,7 @@ app = modal.App("safeinstruct-eval")
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .pip_install(
-        "transformers",
+        "transformers[torch]>=4.46.0",  # Gemma 2
         "torch",
         "accelerate",
         "peft",
@@ -38,12 +38,12 @@ image = (
     )
 )
 
-vol = modal.Volume.from_name("ft-model", create_if_missing=True)
+results_vol = modal.Volume.from_name("safeinstruct-results", create_if_missing=True)
 
 # ── Model config ───────────────────────────────────────────────────────────
-
-BASE_MODEL_ID = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-FT_MODEL_PATH = "/model/model"
+# Override via env: BASE_MODEL_ID, FT_MODEL_PATH (e.g. for Gemma)
+BASE_MODEL_ID = os.environ.get("BASE_MODEL_ID", "google/gemma-2-2b-it")
+FT_MODEL_PATH = os.environ.get("FT_MODEL_PATH", "/root/results/checkpoints/generator_single_layer_ft")
 
 JUDGE_MODELS = {
     "j1": "Qwen/Qwen2.5-7B-Instruct",
@@ -152,7 +152,7 @@ Output only 4 space-separated integers in order (safety pivot acknowledgment ton
     gpu="A10G",
     timeout=3600,
     secrets=[modal.Secret.from_name("huggingface")],
-    volumes={"/model": vol},
+    volumes={"/root/results": results_vol},
 )
 def generate(data: list, model: str = "gemma", batch_size: int = 4, max_new_tokens: int = 512) -> list:
     import torch
@@ -162,8 +162,8 @@ def generate(data: list, model: str = "gemma", batch_size: int = 4, max_new_toke
 
     if model == "ft":
         from peft import PeftModel
-        print(f"Loading fine-tuned model from {FT_MODEL_PATH}")
-        tokenizer = AutoTokenizer.from_pretrained(FT_MODEL_PATH)
+        print(f"Loading base {BASE_MODEL_ID} + LoRA from {FT_MODEL_PATH}")
+        tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_ID, token=HF_TOKEN)
         base = AutoModelForCausalLM.from_pretrained(
             BASE_MODEL_ID,
             dtype=torch.bfloat16,
@@ -415,8 +415,12 @@ def main(
 
     judges = [m.strip() for m in judge_models.split(",") if m.strip()]
 
+    model_desc = BASE_MODEL_ID
+    if model == "ft":
+        model_desc = f"{BASE_MODEL_ID} + LoRA adapter @ {FT_MODEL_PATH}"
+
     print(f"Datasets : {len(pairs)}")
-    print(f"Model    : {model}")
+    print(f"Model    : {model_desc}")
     print(f"Judges   : {judges}")
 
     for input_path, output_path in pairs:

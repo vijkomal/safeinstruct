@@ -38,11 +38,17 @@ def resolve_device(config: Dict[str, Any]) -> str:
     return "cpu"
 
 
-def format_example(prompt: str, response: str) -> Tuple[str, str]:
-    """Return (full_text, prompt_prefix) for loss masking. prompt_prefix is everything before response."""
-    prefix = f"Prompt: {prompt}\nResponse: "
-    full = prefix + response
-    return full, prefix
+def format_example(prompt: str, response: str, tokenizer=None) -> Tuple[str, str]:
+    """Return (full_text, prompt_prefix) for loss masking. Use chat template when available (Gemma-it, etc)."""
+    if tokenizer is not None and getattr(tokenizer, "chat_template", None):
+        prefix = tokenizer.apply_chat_template(
+            [{"role": "user", "content": prompt}],
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+    else:
+        prefix = f"Prompt: {prompt}\nResponse: "
+    return prefix + response, prefix
 
 
 def batchify(items: List[Dict], batch_size: int) -> List[List[Dict]]:
@@ -50,7 +56,15 @@ def batchify(items: List[Dict], batch_size: int) -> List[List[Dict]]:
 
 
 def main() -> None:
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--verified-path", default=None, help="Override data.verified_path")
+    args = parser.parse_args()
+
     config = load_config(str(ROOT / "configs" / "default.yaml"))
+    if args.verified_path:
+        config.setdefault("data", {})["verified_path"] = args.verified_path
+
     device = resolve_device(config)
 
     model_name = config["model"]["generator_name"]
@@ -181,7 +195,7 @@ def main() -> None:
             full_texts = []
             prompt_prefixes = []
             for ex in batch:
-                full, prefix = format_example(ex["prompt"], ex["response"])
+                full, prefix = format_example(ex["prompt"], ex["response"], tokenizer=tokenizer)
                 full_texts.append(full)
                 prompt_prefixes.append(prefix)
 

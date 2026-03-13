@@ -19,7 +19,7 @@ image = (
     modal.Image.debian_slim()
     .pip_install(
         "torch",
-        "transformers",
+        "transformers[torch]>=4.46.0",  # Gemma 2 requires 4.46+
         "accelerate",
         "peft",
         "tqdm",
@@ -71,8 +71,16 @@ def _read_jsonl(path: str) -> List[Dict[str, Any]]:
     return rows
 
 
-def format_example(prompt: str, response: str) -> Tuple[str, str]:
-    prefix = f"Prompt: {prompt}\nResponse: "
+def format_example(prompt: str, response: str, tokenizer=None) -> Tuple[str, str]:
+    """Return (full_text, prompt_prefix) for loss masking. Use chat template when available (Gemma-it, etc)."""
+    if tokenizer is not None and getattr(tokenizer, "chat_template", None):
+        prefix = tokenizer.apply_chat_template(
+            [{"role": "user", "content": prompt}],
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+    else:
+        prefix = f"Prompt: {prompt}\nResponse: "
     return prefix + response, prefix
 
 
@@ -84,12 +92,13 @@ def batchify(items: List[Dict], batch_size: int) -> List[List[Dict]]:
     image=image,
     gpu="T4",
     timeout=14400,
+    secrets=[modal.Secret.from_name("huggingface")],
     volumes={
         "/root/safeinstruct/results": results_volume,
         MODEL_CACHE: model_volume,
     },
 )
-def finetune() -> None:
+def finetune(verified_path_override: str = "") -> None:
     """Run fine-tuning on Modal GPU."""
     import torch
     import yaml
@@ -100,11 +109,10 @@ def finetune() -> None:
 
     HF_TOKEN = os.environ.get("HF_TOKEN")
 
-    config_path = ROOT / "configs" / "default.yaml"
-    with open(config_path, "r", encoding="utf-8") as f:
+    with open(ROOT / "configs" / "default.yaml", "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
-    verified_path = config.get("data", {}).get("verified_path", "results/verified_data.jsonl")
+    verified_path = verified_path_override if verified_path_override else config.get("data", {}).get("verified_path", "results/verified_data.jsonl")
     data_path = ROOT / verified_path if not os.path.isabs(verified_path) else Path(verified_path)
 
     results_volume.reload()
@@ -226,7 +234,7 @@ def finetune() -> None:
             full_texts = []
             prompt_prefixes = []
             for ex in batch:
-                full, prefix = format_example(ex["prompt"], ex["response"])
+                full, prefix = format_example(ex["prompt"], ex["response"], tokenizer=tokenizer)
                 full_texts.append(full)
                 prompt_prefixes.append(prefix)
 
@@ -364,9 +372,9 @@ def finetune() -> None:
     image=image,
     volumes={"/root/safeinstruct/results": results_volume},
 )
-def upload_verified_data(jsonl_content: str) -> None:
-    """Upload local verified_data.jsonl to the results volume."""
-    path = "/root/safeinstruct/results/verified_data.jsonl"
+def upload_verified_data(jsonl_content: str, target_path: str) -> None:
+    """Upload local verified data to the results volume."""
+    path = f"/root/safeinstruct/{target_path}" if not target_path.startswith("/") else target_path
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         f.write(jsonl_content)
@@ -375,20 +383,19 @@ def upload_verified_data(jsonl_content: str) -> None:
 
 
 @app.local_entrypoint()
-def run(use_local_data: bool = False):
+def run(use_local_data: bool = False, verified_path: str = "results/verified_data.jsonl"):
     """Run fine-tuning on Modal.
 
-    If you ran generation+merge on Modal, verified_data.jsonl is already in the volume.
-    Otherwise, use --use-local-data to upload local results/verified_data.jsonl first.
+    Use --verified-path to specify data file (e.g. results/gptneo_verified_data.jsonl).
+    Use --use-local-data to upload from local before running.
     """
-    if use_local_data:
-        local_path = Path(__file__).resolve().parents[1] / "results" / "verified_data.jsonl"
-        if not local_path.exists():
-            raise FileNotFoundError(
-                f"Local {local_path} not found. Run generation+verification first, "
-                "or ensure verified_data.jsonl exists."
-            )
-        content = local_path.read_text(encoding="utf-8")
-        upload_verified_data.remote(content)
+    project_root = Path(__file__).resolve().parents[1]
+    local_path = project_root / verified_path
 
-    finetune.remote()
+    if use_local_data:
+        if not local_path.exists():
+            raise FileNotFoundError(f"Local {local_path} not found.")
+        content = local_path.read_text(encoding="utf-8")
+        upload_verified_data.remote(content, verified_path)
+
+    finetune.remote(verified_path)

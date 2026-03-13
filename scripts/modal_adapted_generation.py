@@ -39,7 +39,7 @@ image = (
     modal.Image.debian_slim()
     .pip_install(
         "torch",
-        "transformers==4.36.2",  # pin: lm-format-enforcer needs PreTrainedTokenizerBase in tokenization_utils
+        "transformers[torch]>=4.46.0",  # Gemma 2 requires 4.46+; [torch] satisfies lm-format-enforcer check
         "accelerate",
         "bitsandbytes>=0.43.2",  # fixes .to() not supported for 4-bit models
         "tqdm",
@@ -50,8 +50,7 @@ image = (
         "lm-format-enforcer",
     )
     .run_commands(
-        # Verify lm-format-enforcer can import transformers (catches env issues at build time)
-        "python -c \"import transformers; from lmformatenforcer.integrations.transformers import generate_enforced; print('lm-format-enforcer OK')\""
+        "python -c \"import transformers; print('transformers', transformers.__version__)\""
     )
     .add_local_dir(
         ".",
@@ -102,25 +101,41 @@ def build_generation_prompt(
     second_example: tuple[str, str, str | None] | None = None,
     use_template_format: bool = False,
 ) -> str:
-    parts: List[str] = []
+    """
+    OLD PROMPT (commented out for reference):
+    ---
     if use_example:
-        ex: Dict[str, str] = {"prompt": seed_prompt_reference, "response": seed_response}
-        if seed_reasoning:
-            ex["reasoning"] = seed_reasoning
+        ex = {"prompt": seed_prompt_reference, "response": seed_response}
+        if seed_reasoning: ex["reasoning"] = seed_reasoning
         parts.append("Example:\n" + json.dumps(ex, ensure_ascii=False))
         if second_example:
             ex2_prompt, ex2_resp, ex2_reason = second_example
-            ex2: Dict[str, str] = {"prompt": ex2_prompt, "response": ex2_resp}
-            if ex2_reason:
-                ex2["reasoning"] = ex2_reason
+            ex2 = {"prompt": ex2_prompt, "response": ex2_resp}
+            if ex2_reason: ex2["reasoning"] = ex2_reason
+            parts.append(json.dumps(ex2, ensure_ascii=False))
+        parts.append("")
+    ...
+    parts.append(f"Target: {target_prompt}\n\n"
+        "Reason and respond to the target above. Reason why the request is harmful, refuse that specific request, "
+        "then offer a safe alternative. Output JSON with response and reasoning:")
+    ---
+    """
+    parts: List[str] = []
+    if use_example:
+        ex: Dict[str, str] = {"response": seed_response, "reasoning": seed_reasoning or ""}
+        parts.append("Example output:\n" + json.dumps(ex, ensure_ascii=False))
+        if second_example:
+            ex2_prompt, ex2_resp, ex2_reason = second_example
+            ex2: Dict[str, str] = {"response": ex2_resp, "reasoning": ex2_reason or ""}
             parts.append(json.dumps(ex2, ensure_ascii=False))
         parts.append("")
     if use_principle_context and safety_principle and transformation_rule:
         parts.append(f"Principle: {safety_principle}\nRule: {transformation_rule}")
     parts.append(
-        f"Target: {target_prompt}\n\n"
-        "Reason and respond to the target above. Reason why the request is harmful, refuse that specific request, then offer a safe alternative. "
-        "Output JSON with response and reasoning:"
+        f"Target request: {target_prompt}\n\n"
+        "Refuse this request and offer a safe alternative. "
+        "Output ONLY valid JSON with exactly two keys: \"response\" (your safe answer) and \"reasoning\" (why the request is harmful). "
+        "Example format: {\"response\": \"...\", \"reasoning\": \"...\"}"
     )
     return "\n".join(parts)
 
@@ -439,6 +454,7 @@ def generate_json_pairs_for_seed(
     use_grammar_constraint: bool = False,
     response_max_length: int = 800,
     reasoning_max_length: int = 500,
+    generator_name: str = "",
 ) -> Tuple[List[Dict[str, Any]], int, int]:
     generated_pairs = []
     num_raw_generations = 0
@@ -471,6 +487,13 @@ def generate_json_pairs_for_seed(
             second_example=second_example,
             use_template_format=use_template_format,
         )
+        # Instruction-tuned models (Gemma-it, TinyLlama-Chat) expect chat format
+        if getattr(tokenizer, "chat_template", None):
+            model_prompt = tokenizer.apply_chat_template(
+                [{"role": "user", "content": model_prompt}],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
         inputs = tokenizer(model_prompt, return_tensors="pt").to(device)
         if generation_seed is not None:
             s = generation_seed + seed_idx * 10000 + i * 1000
@@ -494,7 +517,9 @@ def generate_json_pairs_for_seed(
         )
         if no_repeat_ngram_size > 0:
             gen_kwargs["no_repeat_ngram_size"] = no_repeat_ngram_size
-        if use_grammar_constraint:
+        # Gemma + prefix_allowed_tokens_fn produces empty/wrong output; use unconstrained
+        use_grammar = use_grammar_constraint and "gemma" not in (generator_name or "").lower()
+        if use_grammar:
             try:
                 output = _generate_with_grammar_constraint(
                     model=model,
@@ -509,6 +534,7 @@ def generate_json_pairs_for_seed(
                     pad_token_id=tokenizer.eos_token_id,
                     response_max_length=response_max_length,
                     reasoning_max_length=reasoning_max_length,
+                    generator_name=generator_name,
                 )
             except Exception as e:
                 print(f"[WARN] Grammar constraint failed ({e}), falling back to unconstrained")
@@ -527,8 +553,10 @@ def generate_json_pairs_for_seed(
             continue
         obj = _extract_first_json_object(text)
         if obj is not None:
-            response = obj.get("response")
-            reasoning = obj.get("reasoning")
+            response = obj.get("response") or obj.get("output")
+            reasoning = obj.get("reasoning") or obj.get("reason")
+            if isinstance(response, dict):
+                response = response.get("text") or response.get("response") or json.dumps(response)
             if isinstance(response, str):
                 response = response.strip()
             elif isinstance(response, dict):
@@ -616,10 +644,9 @@ def _generate_with_grammar_constraint(
     no_repeat_ngram_size: int = 0,
     response_max_length: int = 800,
     reasoning_max_length: int = 500,
+    generator_name: str = "",
 ) -> Any:
-    """Use lm-format-enforcer's generate_enforced for guaranteed constraint application."""
-    from lmformatenforcer.integrations.transformers import generate_enforced
-
+    """Use lm-format-enforcer: prefix_allowed_tokens_fn for Gemma (transformers 4.46+), generate_enforced for TinyLlama/GPT-Neo."""
     parser = _build_json_parser(
         response_max_length=response_max_length,
         reasoning_max_length=reasoning_max_length,
@@ -627,34 +654,61 @@ def _generate_with_grammar_constraint(
     if parser is None:
         raise RuntimeError("lm-format-enforcer not available for grammar constraint")
 
-    gen_kwargs: Dict[str, Any] = dict(
-        **inputs,
-        max_new_tokens=max_new_tokens,
-        do_sample=True,
-        temperature=temperature,
-        top_p=top_p,
-        num_return_sequences=1,
-        pad_token_id=pad_token_id,
-        repetition_penalty=repetition_penalty,
-    )
+    use_prefix_allowed = "gemma" in (generator_name or "").lower()
+
+    if use_prefix_allowed:
+        from lmformatenforcer.integrations.transformers import build_transformers_prefix_allowed_tokens_fn
+
+        prefix_fn = build_transformers_prefix_allowed_tokens_fn(tokenizer, parser)
+        gen_kwargs: Dict[str, Any] = dict(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            do_sample=True,
+            temperature=temperature,
+            top_p=top_p,
+            num_return_sequences=1,
+            pad_token_id=pad_token_id,
+            repetition_penalty=repetition_penalty,
+            prefix_allowed_tokens_fn=prefix_fn,
+        )
+    else:
+        from lmformatenforcer.integrations.transformers import generate_enforced
+
+        gen_kwargs = dict(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            do_sample=True,
+            temperature=temperature,
+            top_p=top_p,
+            num_return_sequences=1,
+            pad_token_id=pad_token_id,
+            repetition_penalty=repetition_penalty,
+        )
+        if no_repeat_ngram_size > 0:
+            gen_kwargs["no_repeat_ngram_size"] = no_repeat_ngram_size
+        output = generate_enforced(model, tokenizer, parser, **gen_kwargs)
+        if hasattr(output, "sequences"):
+            return output.sequences[0]
+        return output[0] if hasattr(output, "__getitem__") else output
+
     if no_repeat_ngram_size > 0:
         gen_kwargs["no_repeat_ngram_size"] = no_repeat_ngram_size
-    output = generate_enforced(model, tokenizer, parser, **gen_kwargs)
-    # Handle both raw tensor and GenerateDecoderOnlyOutput
-    if hasattr(output, "sequences"):
-        return output.sequences[0]
-    return output[0] if hasattr(output, "__getitem__") else output
+    return model.generate(**gen_kwargs)[0]
 
 
-def parse_verifier_label(label_text: str, unparsed_as_pass: bool = True) -> Tuple[bool, str, str]:
+def parse_verifier_label(
+    label_text: str,
+    unparsed_as_pass: bool = True,
+    lenient: bool = False,
+) -> Tuple[bool, str, str]:
     """Parse PASS/NO_PASS from anywhere in output (handles batching artifacts)."""
     text_upper = label_text.upper().replace("-", "_")
-    # Check for NO_PASS first (more specific)
     if re.search(r"\bNO_?PASS\b", text_upper):
+        if lenient:
+            return True, label_text, "unsafe_label_overridden"
         return False, label_text, "unsafe_label"
     if re.search(r"\bPASS\b", text_upper):
         return True, label_text, "safe_label"
-    # Unparsed: treat as PASS when verifier fails to output (less strict)
     return (True, label_text, "unparsed_as_pass") if unparsed_as_pass else (False, label_text, "unparsed_label")
 
 
@@ -665,6 +719,7 @@ def verify_candidates_with_local_model(
     generated_pairs: List[Dict[str, str]],
     verifier_max_new_tokens: int,
     unparsed_as_pass: bool = True,
+    verifier_lenient: bool = False,
 ) -> List[Tuple[bool, str, str]]:
     if not generated_pairs:
         return []
@@ -706,7 +761,9 @@ def verify_candidates_with_local_model(
             outputs[i][input_len:],
             skip_special_tokens=True,
         ).strip()
-        results.append(parse_verifier_label(label_text, unparsed_as_pass=unparsed_as_pass))
+        results.append(parse_verifier_label(
+            label_text, unparsed_as_pass=unparsed_as_pass, lenient=verifier_lenient
+        ))
     return results
 
 
@@ -800,6 +857,7 @@ def process_chunk(chunk_id: int, target_prompts: List[str]):
     verifier_max_new_tokens = int(config.get("generation", {}).get("verifier_max_new_tokens", 12))
     verifier_batch_size = int(config.get("generation", {}).get("verifier_batch_size", 8))
     verifier_unparsed_as_pass = bool(config.get("generation", {}).get("verifier_unparsed_as_pass", True))
+    verifier_lenient = bool(config.get("generation", {}).get("verifier_lenient", False))
     use_grammar_constraint = bool(config.get("generation", {}).get("use_grammar_constraint", False))
     if use_grammar_constraint:
         if _build_json_parser(response_max_length=response_max_length, reasoning_max_length=reasoning_max_length) is None:
@@ -893,6 +951,7 @@ def process_chunk(chunk_id: int, target_prompts: List[str]):
             use_grammar_constraint=use_grammar_constraint,
             response_max_length=response_max_length,
             reasoning_max_length=reasoning_max_length,
+            generator_name=generator_name,
         )
 
         batch_results_all: List[Tuple[bool, str, str]] = []
@@ -906,6 +965,7 @@ def process_chunk(chunk_id: int, target_prompts: List[str]):
                     generated_pairs=batch_pairs,
                     verifier_max_new_tokens=verifier_max_new_tokens,
                     unparsed_as_pass=verifier_unparsed_as_pass,
+                    verifier_lenient=verifier_lenient,
                 )
             )
 

@@ -12,15 +12,15 @@ data:
   # prompt_source: "hf://declare-lab/HarmfulQA:train"  # null for no external prompts
   prompt_source: null
   verified_path: "results/verified_data.jsonl"  # or verified_filtered.jsonl for quality-filtered subset
-  val_ratio: 0.1  # 10% held out for validation
+  val_ratio: 0.2  # 20% held out; higher = more stable val metric, less train data
 
 model:
   # Any HuggingFace causal LM. Examples: google/gemma-2-2b, EleutherAI/gpt-neo-125M, TinyLlama/TinyLlama-1.1B-Chat-v1.0
   # Override via GENERATOR_MODEL / VERIFIER_MODEL env vars (e.g. modal run -e GENERATOR_MODEL=TinyLlama/TinyLlama-1.1B-Chat-v1.0)
-  # generator_name: "google/gemma-2-2b"
-  # verifier_name: "google/gemma-2-2b"
-  generator_name: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-  verifier_name: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+  generator_name: "google/gemma-2-2b-it"
+  verifier_name: "google/gemma-2-2b-it"
+  # generator_name: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+  # verifier_name: "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
   # generator_name: "EleutherAI/gpt-neo-2.7b"
   # verifier_name: "EleutherAI/gpt-neo-2.7b"
   load_in_4bit: false  # true causes .to() error with bitsandbytes in Modal; TinyLlama 1.1B fits without it
@@ -38,7 +38,7 @@ train:
   lora: true  # true = LoRA (peft); overrides full_finetune when true
   lora_r: 8
   lora_alpha: 16
-  lora_dropout: 0.05
+  lora_dropout: 0.1  # increased from 0.05 for regularization (reduces overfitting)
   warmup_ratio: 0.1  # linear warmup over first 10% of steps
   use_bf16: true  # mixed precision (cuda only); bf16 preferred on Ampere+
   use_fp16: false  # fallback if bf16 unsupported
@@ -61,6 +61,7 @@ generation:
   verifier_max_new_tokens: 12
   verifier_batch_size: 8
   verifier_unparsed_as_pass: true  # when verifier fails to output PASS/NO_PASS, accept (less strict)
+  verifier_lenient: true  # when true, treat NO_PASS as PASS (accept all; verifier often over-rejects)
   verify_only_from_generated_candidates: false
   persona: false  # use random persona for prompt diversity
   use_persona_context: true
@@ -69,7 +70,7 @@ generation:
   use_example: true  # small models need examples to learn the pattern
   use_two_examples: false  # 2 examples reinforces structure, reduces copy of one
   use_template_format: true  # two-sentence structure; no brackets (model was copying them)
-  use_grammar_constraint: true  # true = lm-format-enforcer guarantees valid JSON (slower)
+  use_grammar_constraint: false  # disabled: Gemma + lm-format-enforcer broken; empty/wrong output
   external_prompt_limit: 50
   generation_seed: null  # null = no seed (max variation); int = reproducible
   generated_candidates_path: "results/generated_candidates.jsonl"
