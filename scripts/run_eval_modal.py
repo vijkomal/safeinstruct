@@ -42,7 +42,7 @@ vol = modal.Volume.from_name("ft-model", create_if_missing=True)
 
 # ── Model config ───────────────────────────────────────────────────────────
 
-BASE_MODEL_ID = "EleutherAI/gpt-neo-2.7B"
+BASE_MODEL_ID = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 FT_MODEL_PATH = "/model/model"
 
 JUDGE_MODELS = {

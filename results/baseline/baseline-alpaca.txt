@@ -1,0 +1,11 @@
+
+=== Results: alpaca-results-baseline.jsonl ===
+Metric                                            qwen2.5-7b              mistral-7b             qwen2.5-14b
+------------------------------------------------------------------------------------------------------------
+Redirected (%)                               736/804 (91.5%)         728/805 (90.4%)         510/805 (63.4%)
+Avg safety                                              1.82                    1.94                    1.95
+Avg pivot                                               1.98                    1.76                    1.25
+Avg acknowledgment                                      1.73                    1.82                    0.94
+Avg tone                                                1.92                    1.98                    1.87
+Parse failures                                             1                       0                       0
+
