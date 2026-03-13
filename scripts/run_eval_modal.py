@@ -163,14 +163,15 @@ def generate(data: list, model: str = "gemma", batch_size: int = 4, max_new_toke
     if model == "ft":
         from peft import PeftModel
         print(f"Loading fine-tuned model from {FT_MODEL_PATH}")
-        tokenizer = AutoTokenizer.from_pretrained(FT_MODEL_PATH)
+        # Tokenizer is unchanged for LoRA; load from base. Adapter path may lack tokenizer files.
+        tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_ID, token=HF_TOKEN)
         base = AutoModelForCausalLM.from_pretrained(
             BASE_MODEL_ID,
             dtype=torch.bfloat16,
             device_map="auto",
             token=HF_TOKEN,
         )
-        lm = PeftModel.from_pretrained(base, FT_MODEL_PATH)
+        lm = PeftModel.from_pretrained(base, FT_MODEL_PATH, is_trainable=False)
     else:
         print(f"Loading base model: {BASE_MODEL_ID}")
         tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_ID, token=HF_TOKEN)
@@ -188,6 +189,9 @@ def generate(data: list, model: str = "gemma", batch_size: int = 4, max_new_toke
 
     def format_prompt(item):
         prompt = item.get("Behavior") or item.get("prompt") or item.get("instruction") or ""
+        # GPT-Neo was fine-tuned with "Prompt: X\nResponse: " format; use that for ft model
+        if model == "ft" and "gpt-neo" in BASE_MODEL_ID.lower():
+            return f"Prompt: {prompt}\nResponse: "
         if tokenizer.chat_template:
             return tokenizer.apply_chat_template(
                 [{"role": "user", "content": prompt}],

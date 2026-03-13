@@ -8,9 +8,12 @@ Usage:
 
   # With options:
   SEED_LIMIT=25 modal run scripts/run_generate_verify_modal.py
+  HARMFULQA_PROMPTS_LIMIT=200 modal run scripts/run_generate_verify_modal.py  # subset for testing
+  MODAL_CHUNK_SIZE=2 modal run scripts/run_generate_verify_modal.py  # smaller chunks avoid timeout (default: 2)
   CONFIG_PATH=configs/scale_10k.yaml modal run scripts/run_generate_verify_modal.py
 
 Requires: HF token with Gemma access (modal secret 'huggingface-secret' or HF_TOKEN env).
+Modal times out on long functions; use MODAL_CHUNK_SIZE=2 (default) for ~2 items per GPU task.
 """
 
 from __future__ import annotations
@@ -159,8 +162,8 @@ def _looks_like_safe_refusal(response: str) -> bool:
 @app.function(
     image=image,
     gpu="T4",
-    timeout=600,
-    secrets=[modal.Secret.from_name("huggingface-secret", required=False)],
+    timeout=1800,  # 30 min per chunk (Modal supports up to 24h; smaller chunks avoid timeout)
+    secrets=[modal.Secret.from_name("huggingface-secret")],
     volumes={"/cache/huggingface": hf_volume},
 )
 def process_chunk(task: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
@@ -393,7 +396,7 @@ def main():
     generation_items: List[Dict[str, Any]] = []
 
     use_hq_plus_principles = gen_cfg.get("use_harmfulqa_prompts_with_principles", False)
-    hq_limit = int(gen_cfg.get("harmfulqa_prompts_limit", 0))
+    hq_limit = int(os.environ.get("HARMFULQA_PROMPTS_LIMIT", 0)) or int(gen_cfg.get("harmfulqa_prompts_limit", 0))
 
     if use_hq_plus_principles:
         # HarmfulQA prompts as targets + sample 1 of ~20 principle responses as reference
@@ -428,8 +431,8 @@ def main():
                 "transformation_rule": seed_row.get("transformation_rule"),
             })
 
-    # Chunk for parallel processing (5 seeds per GPU container)
-    chunk_size = 5
+    # Chunk for parallel processing. Smaller chunks avoid Modal timeout (2 items × num_candidates each).
+    chunk_size = int(os.environ.get("MODAL_CHUNK_SIZE", 2))
     tasks = []
     for i in range(0, len(generation_items), chunk_size):
         chunk = generation_items[i : i + chunk_size]

@@ -27,6 +27,15 @@ def load_config(path: str) -> Dict[str, Any]:
         return yaml.safe_load(f)
 
 
+def _deep_merge(base: dict, override: dict) -> dict:
+    for k, v in override.items():
+        if k in base and isinstance(base[k], dict) and isinstance(v, dict):
+            _deep_merge(base[k], v)
+        else:
+            base[k] = v
+    return base
+
+
 def resolve_device(config: Dict[str, Any]) -> str:
     requested = config.get("device")
     if requested:
@@ -51,6 +60,10 @@ def batchify(items: List[Dict], batch_size: int) -> List[List[Dict]]:
 
 def main() -> None:
     config = load_config(str(ROOT / "configs" / "default.yaml"))
+    override_path = os.environ.get("CONFIG_PATH")
+    if override_path and (ROOT / override_path).exists():
+        override_cfg = load_config(str(ROOT / override_path))
+        _deep_merge(config, override_cfg)
     device = resolve_device(config)
 
     model_name = config["model"]["generator_name"]
@@ -113,11 +126,12 @@ def main() -> None:
     if use_lora:
         from peft import LoraConfig, get_peft_model, TaskType
 
+        lora_target = train_cfg.get("lora_target_modules") or ["q_proj", "k_proj", "v_proj", "o_proj"]
         lora_config = LoraConfig(
             r=lora_r,
             lora_alpha=lora_alpha,
             lora_dropout=lora_dropout,
-            target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+            target_modules=lora_target,
             bias="none",
             task_type=TaskType.CAUSAL_LM,
         )

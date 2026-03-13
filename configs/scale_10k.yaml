@@ -1,0 +1,14 @@
+# Scale config for ~10K synthetic instruction pairs (per project milestone)
+# Usage: CONFIG_PATH=configs/scale_10k.yaml python scripts/run_generate_verify.py
+# This overrides defaults - configs are deep-merged.
+#
+# Math: ~10K raw pairs = ~3334 prompts × 3 candidates
+# HarmfulQA train has ~1960 rows. With 3500 limit + seeds we reach 10K+ raw.
+# Expected verified count depends on verifier pass rate (often 30-60%).
+
+data:
+  prompt_source: "hf://declare-lab/HarmfulQA:train"
+
+generation:
+  external_prompt_limit: 3500
+  num_candidates_per_seed: 4

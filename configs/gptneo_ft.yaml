@@ -1,0 +1,16 @@
+# GPT-Neo 2.7B fine-tuning on gptneo_verified_data
+# Usage: CONFIG_PATH=configs/gptneo_ft.yaml python scripts/run_finetune.py
+
+data:
+  verified_path: "results/gptneo_verified_data.jsonl"
+
+model:
+  generator_name: "EleutherAI/gpt-neo-2.7B"
+  verifier_name: "EleutherAI/gpt-neo-2.7B"
+
+train:
+  save_name: "gptneo_safety_ft"
+  batch_size: 2
+  grad_accum_steps: 8  # effective batch 16
+  grad_checkpointing: true  # reduce memory for T4
+  lora_target_modules: ["c_attn", "c_proj"]  # GPT-2/GPT-Neo architecture

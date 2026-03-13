@@ -1,5 +1,17 @@
 #!/usr/bin/env python3
-"""Modal-adapted minimal model-based generation + verifier loop using seed pivots."""
+"""Modal-adapted minimal model-based generation + verifier loop using seed pivots.
+
+Usage:
+  modal run scripts/modal_adapted_generation.py
+
+  # GPT-Neo 10-seed qualitative test (verify output before scaling):
+  GENERATOR_MODEL=EleutherAI/gpt-neo-2.7B VERIFIER_MODEL=EleutherAI/gpt-neo-2.7B MAX_SEEDS=10 RESULTS_SUBDIR=gptneo modal run scripts/modal_adapted_generation.py
+
+  # TinyLlama (friend runs in parallel with separate subdir):
+  GENERATOR_MODEL=TinyLlama/TinyLlama-1.1B-Chat-v1.0 VERIFIER_MODEL=TinyLlama/TinyLlama-1.1B-Chat-v1.0 RESULTS_SUBDIR=tinyllama modal run scripts/modal_adapted_generation.py
+
+  # Env overrides: MAX_SEEDS, CHUNK_SIZE, RESULTS_SUBDIR, GENERATOR_MODEL, VERIFIER_MODEL
+"""
 
 import json
 import os
@@ -727,7 +739,7 @@ CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", "50"))  # prompts per container
     },
     timeout=7200,  # 2h per chunk (50 prompts ~25-40 min)
 )
-def process_chunk(chunk_id: int, target_prompts: List[str]):
+def process_chunk(chunk_id: int, target_prompts: List[str], results_subdir: str = ""):
     """Process a chunk of target prompts: classify+sample, generate, verify. Writes to chunk_{id}_*.jsonl."""
     from tqdm import tqdm
 
@@ -735,7 +747,9 @@ def process_chunk(chunk_id: int, target_prompts: List[str]):
         return
 
     results_volume.reload()  # get latest from previous runs for resume check
-    results_dir = "/root/results"
+    results_dir = f"/root/results/{results_subdir}" if results_subdir else "/root/results"
+    if results_subdir:
+        os.makedirs(results_dir, exist_ok=True)
     chunk_prefix = f"{results_dir}/chunk_{chunk_id}"
     gen_path = f"{chunk_prefix}_generated.jsonl"
     # Skip if already done (resume: delete chunk_N_*.jsonl to retry)
@@ -936,9 +950,9 @@ def process_chunk(chunk_id: int, target_prompts: List[str]):
     volumes={"/root/results": results_volume},
     timeout=600,
 )
-def merge_chunks(num_chunks: int):
+def merge_chunks(num_chunks: int, results_subdir: str = ""):
     """Merge chunk_*_*.jsonl files into final output files."""
-    results_dir = "/root/results"
+    results_dir = f"/root/results/{results_subdir}" if results_subdir else "/root/results"
     results_volume.reload()
 
     generated_rows: List[Dict[str, Any]] = []
@@ -957,12 +971,10 @@ def merge_chunks(num_chunks: int):
             if os.path.exists(path):
                 lst.extend(read_jsonl(path))
 
-    verified_path = "results/verified_data.jsonl"
-    parse_failures_path = "results/parse_failures.jsonl"
     write_jsonl(f"{results_dir}/generated_candidates.jsonl", generated_rows)
     write_jsonl(f"{results_dir}/rejected_candidates.jsonl", rejected_rows)
-    write_jsonl(f"{results_dir}/{os.path.basename(verified_path)}", verified_rows)
-    write_jsonl(f"{results_dir}/{os.path.basename(parse_failures_path)}", parse_failures)
+    write_jsonl(f"{results_dir}/verified_data.jsonl", verified_rows)
+    write_jsonl(f"{results_dir}/parse_failures.jsonl", parse_failures)
 
     # Remove chunk files to avoid confusion on re-run
     for i in range(num_chunks):
@@ -995,7 +1007,7 @@ def run():
         if p:
             target_prompts.append(p)
 
-    max_seeds = int(config.get("generation", {}).get("max_seeds", 0))
+    max_seeds = int(os.environ.get("MAX_SEEDS") or config.get("generation", {}).get("max_seeds", 0))
     if max_seeds > 0 and len(target_prompts) > max_seeds:
         rng = random.Random(int(config.get("seed", 42)))
         target_prompts = rng.sample(target_prompts, max_seeds)
@@ -1004,12 +1016,13 @@ def run():
         print(f"[INFO] Loaded {len(target_prompts)} target prompts")
 
     chunk_size = int(os.environ.get("CHUNK_SIZE") or config.get("generation", {}).get("chunk_size", CHUNK_SIZE))
-    chunks: List[Tuple[int, List[str]]] = []
+    results_subdir = os.environ.get("RESULTS_SUBDIR", "")
+    chunks: List[Tuple[int, List[str], str]] = []
     for i in range(0, len(target_prompts), chunk_size):
         chunk_prompts = target_prompts[i : i + chunk_size]
-        chunks.append((len(chunks), chunk_prompts))
+        chunks.append((len(chunks), chunk_prompts, results_subdir))
 
-    print(f"[INFO] Split into {len(chunks)} chunks (CHUNK_SIZE={chunk_size})")
+    print(f"[INFO] Split into {len(chunks)} chunks (CHUNK_SIZE={chunk_size})" + (f", RESULTS_SUBDIR={results_subdir}" if results_subdir else ""))
     if not chunks:
         print("[INFO] No prompts to process")
         return
@@ -1018,4 +1031,4 @@ def run():
     list(process_chunk.starmap(chunks))
 
     # Merge chunk outputs into final files
-    merge_chunks.remote(len(chunks))
+    merge_chunks.remote(len(chunks), results_subdir)

@@ -14,6 +14,7 @@ app = modal.App("safeinstruct-finetune")
 MODEL_CACHE = "/root/model-cache"
 results_volume = modal.Volume.from_name("safeinstruct-results", create_if_missing=True)
 model_volume = modal.Volume.from_name("safeinstruct-model-cache", create_if_missing=True)
+ft_model_volume = modal.Volume.from_name("ft-model", create_if_missing=True)  # for run_eval_modal
 
 image = (
     modal.Image.debian_slim()
@@ -80,16 +81,26 @@ def batchify(items: List[Dict], batch_size: int) -> List[List[Dict]]:
     return [items[i : i + batch_size] for i in range(0, len(items), batch_size)]
 
 
+def _deep_merge(base: dict, override: dict) -> dict:
+    for k, v in override.items():
+        if k in base and isinstance(base[k], dict) and isinstance(v, dict):
+            _deep_merge(base[k], v)
+        else:
+            base[k] = v
+    return base
+
+
 @app.function(
     image=image,
-    gpu="T4",
+    gpu="A10G",  # 24GB for GPT-Neo 2.7B; use T4 for smaller models
     timeout=14400,
     volumes={
         "/root/safeinstruct/results": results_volume,
         MODEL_CACHE: model_volume,
+        "/model": ft_model_volume,
     },
 )
-def finetune() -> None:
+def finetune(config_path_override: str = "") -> None:
     """Run fine-tuning on Modal GPU."""
     import torch
     import yaml
@@ -103,6 +114,11 @@ def finetune() -> None:
     config_path = ROOT / "configs" / "default.yaml"
     with open(config_path, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
+    override_path = config_path_override or os.environ.get("CONFIG_PATH")
+    if override_path and (ROOT / override_path).exists():
+        with open(ROOT / override_path, "r", encoding="utf-8") as f:
+            override = yaml.safe_load(f)
+        _deep_merge(config, override)
 
     verified_path = config.get("data", {}).get("verified_path", "results/verified_data.jsonl")
     data_path = ROOT / verified_path if not os.path.isabs(verified_path) else Path(verified_path)
@@ -165,11 +181,12 @@ def finetune() -> None:
     if use_lora:
         from peft import LoraConfig, get_peft_model, TaskType
 
+        lora_target = train_cfg.get("lora_target_modules") or ["q_proj", "k_proj", "v_proj", "o_proj"]
         lora_config = LoraConfig(
             r=lora_r,
             lora_alpha=lora_alpha,
             lora_dropout=lora_dropout,
-            target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+            target_modules=lora_target,
             bias="none",
             task_type=TaskType.CAUSAL_LM,
         )
@@ -359,36 +376,54 @@ def finetune() -> None:
     results_volume.commit()
     print(f"Checkpoints saved to volume (results/checkpoints/{save_name})")
 
+    # Copy to ft-model volume for run_eval_modal (expects /model/model)
+    import shutil
+    ft_model_path = "/model/model"
+    os.makedirs(ft_model_path, exist_ok=True)
+    for f in os.listdir(save_path):
+        src = os.path.join(save_path, f)
+        dst = os.path.join(ft_model_path, f)
+        if os.path.isfile(src):
+            shutil.copy2(src, dst)
+        else:
+            shutil.copytree(src, dst, dirs_exist_ok=True)
+    ft_model_volume.commit()
+    print(f"Copied checkpoint to ft-model volume at /model/model for eval")
+
 
 @app.function(
     image=image,
     volumes={"/root/safeinstruct/results": results_volume},
 )
-def upload_verified_data(jsonl_content: str) -> None:
-    """Upload local verified_data.jsonl to the results volume."""
-    path = "/root/safeinstruct/results/verified_data.jsonl"
+def upload_verified_data(jsonl_content: str, target_filename: str = "verified_data.jsonl") -> None:
+    """Upload local verified JSONL to the results volume."""
+    path = f"/root/safeinstruct/results/{target_filename}"
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         f.write(jsonl_content)
     results_volume.commit()
-    print(f"Uploaded {len(jsonl_content.splitlines())} lines to volume")
+    print(f"Uploaded {len(jsonl_content.splitlines())} lines to {target_filename}")
 
 
 @app.local_entrypoint()
-def run(use_local_data: bool = False):
+def run(use_local_data: bool = False, local_verified_path: str = "", target_filename: str = ""):
     """Run fine-tuning on Modal.
 
     If you ran generation+merge on Modal, verified_data.jsonl is already in the volume.
-    Otherwise, use --use-local-data to upload local results/verified_data.jsonl first.
+    Otherwise, use --use-local-data to upload local verified JSONL first.
+    Use --local-verified-path results/gptneo_verified_data.jsonl and --target-filename gptneo_verified_data.jsonl for GPT-Neo data.
     """
     if use_local_data:
-        local_path = Path(__file__).resolve().parents[1] / "results" / "verified_data.jsonl"
+        rel_path = local_verified_path or "results/verified_data.jsonl"
+        local_path = Path(__file__).resolve().parents[1] / rel_path
         if not local_path.exists():
             raise FileNotFoundError(
                 f"Local {local_path} not found. Run generation+verification first, "
-                "or ensure verified_data.jsonl exists."
+                "or ensure the file exists."
             )
         content = local_path.read_text(encoding="utf-8")
-        upload_verified_data.remote(content)
+        fn = target_filename or os.path.basename(rel_path)
+        upload_verified_data.remote(content, fn)
 
-    finetune.remote()
+    config_override = os.environ.get("CONFIG_PATH", "")
+    finetune.remote(config_override)
