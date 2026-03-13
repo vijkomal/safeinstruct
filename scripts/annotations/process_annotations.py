@@ -212,6 +212,11 @@ def main():
         "--overlap-ids",
         help="Optional: path to file with overlap example IDs (one per line). If not set, inferred from first annotator's in_overlap=True.",
     )
+    parser.add_argument(
+        "--agreement-mode",
+        action="store_true",
+        help="Annotators rated agreement (1-5) with judge, not usefulness. Report mean agreement instead of agreement-with-judge.",
+    )
     args = parser.parse_args()
 
     root = Path(__file__).resolve().parents[2]
@@ -288,34 +293,52 @@ def main():
     else:
         print(f"\nKrippendorff: skipped (need ≥5 overlap examples with ≥2 votes, got {len(overlap_with_votes)})")
 
-    # Judge agreement
-    print("\n--- Per-annotator agreement with judge ---")
-    agg = agreement_with_judge(annotations, judge_scores)
-    for name, stats in agg.items():
-        print(f"  {name}: exact={stats['exact']:.2%}, within±1={stats['within_1']:.2%} (n={stats['n']})")
+    agg = None
+    cal = None
+    weighted_scores = {}
 
-    # Weighted calibration
-    cal = weighted_judge_score(judge_scores, agg)
-    if cal and "mean_annotator_judge_agreement" in cal:
-        print(f"\nMean annotator–judge agreement: {cal['mean_annotator_judge_agreement']:.2%}")
-        print("Use this as calibration weight when reporting judge-weighted usefulness.")
+    if args.agreement_mode:
+        # Agreement mode: annotators rated 1-5 how much they agree with judge
+        print("\n--- Mean agreement score per annotator (1-5 scale) ---")
+        agg = {}
+        for name, votes in annotations.items():
+            vals = [v for v in votes.values() if 1 <= v <= 5]
+            mean_agr = sum(vals) / len(vals) if vals else float("nan")
+            agg[name] = {"mean_agreement": mean_agr, "n": len(vals)}
+            print(f"  {name}: mean={mean_agr:.2f} (n={len(vals)})")
+        all_vals = [v for votes in annotations.values() for v in votes.values() if 1 <= v <= 5]
+        if all_vals:
+            print(f"\nOverall mean agreement: {sum(all_vals)/len(all_vals):.2f}")
+    else:
+        # Usefulness mode: compare annotator votes to judge
+        print("\n--- Per-annotator agreement with judge ---")
+        agg = agreement_with_judge(annotations, judge_scores)
+        for name, stats in agg.items():
+            print(f"  {name}: exact={stats['exact']:.2%}, within±1={stats['within_1']:.2%} (n={stats['n']})")
 
-    # Weighted human scores (for annotated examples)
-    all_annotated_ids = set()
-    for v in annotations.values():
-        all_annotated_ids.update(v.keys())
-    weighted_scores = weighted_human_score_per_example(annotations, agg, list(all_annotated_ids))
-    if weighted_scores:
-        avg_weighted = sum(weighted_scores.values()) / len(weighted_scores)
-        print(f"\nWeighted human score (avg over {len(weighted_scores)} annotated): {avg_weighted:.2f}")
+        # Weighted calibration
+        cal = weighted_judge_score(judge_scores, agg)
+        if cal and "mean_annotator_judge_agreement" in cal:
+            print(f"\nMean annotator–judge agreement: {cal['mean_annotator_judge_agreement']:.2%}")
+            print("Use this as calibration weight when reporting judge-weighted usefulness.")
+
+        # Weighted human scores (for annotated examples)
+        all_annotated_ids = set()
+        for v in annotations.values():
+            all_annotated_ids.update(v.keys())
+        weighted_scores = weighted_human_score_per_example(annotations, agg, list(all_annotated_ids))
+        if weighted_scores:
+            avg_weighted = sum(weighted_scores.values()) / len(weighted_scores)
+            print(f"\nWeighted human score (avg over {len(weighted_scores)} annotated): {avg_weighted:.2f}")
 
     # Save summary
     summary = {
         "krippendorff_alpha": krippendorff_alpha_matrix(annotations, overlap_with_votes) if len(overlap_with_votes) >= 5 else None,
         "overlap_n": len(overlap_with_votes),
+        "agreement_mode": args.agreement_mode,
         "annotator_judge_agreement": agg,
         "calibration": cal,
-        "weighted_human_scores": {k: round(v, 2) for k, v in weighted_scores.items()},
+        "weighted_human_scores": {k: round(v, 2) for k, v in weighted_scores.items()} if weighted_scores else {},
     }
     summary_path = ann_dir / "annotation_summary.json"
     with open(summary_path, "w") as f:
