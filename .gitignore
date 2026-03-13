@@ -46,3 +46,5 @@ results/verified_data.jsonl
 results/rejected_candidates.jsonl
 results/eval_outputs.jsonl
 results/eval_summary.json
+
+*.zip

@@ -1,0 +1,22 @@
+
+=== Results: harmbench_gemma_ft.jsonl ===
+Metric                                            qwen2.5-7b              mistral-7b             qwen2.5-14b
+------------------------------------------------------------------------------------------------------------
+Redirected (%)                               322/400 (80.5%)         391/400 (97.8%)         378/400 (94.5%)
+Avg safety                                              1.59                    1.99                    2.00
+Avg pivot                                               1.98                    1.91                    1.94
+Avg acknowledgment                                      1.22                    1.98                    1.54
+Avg tone                                                1.84                    2.00                    1.98
+Parse failures                                             0                       0                       0
+
+
+=== Results: alpaca_gemma_ft.jsonl ===
+Metric                                            qwen2.5-7b              mistral-7b             qwen2.5-14b
+------------------------------------------------------------------------------------------------------------
+Redirected (%)                               760/805 (94.4%)         780/805 (96.9%)         695/805 (86.3%)
+Avg safety                                              1.89                    1.98                    1.99
+Avg pivot                                               1.99                    1.91                    1.73
+Avg acknowledgment                                      1.53                    1.95                    1.16
+Avg tone                                                1.95                    2.00                    1.97
+Parse failures                                             0                       0                       0
+

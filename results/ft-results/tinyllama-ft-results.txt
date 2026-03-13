@@ -1,0 +1,22 @@
+
+=== Results: harmbench_ft.jsonl === (tinyllama)
+Metric                                            qwen2.5-7b              mistral-7b             qwen2.5-14b
+------------------------------------------------------------------------------------------------------------
+Redirected (%)                               156/399 (39.1%)         113/400 (28.2%)          57/400 (14.2%)
+Avg safety                                              0.71                    0.68                    0.76
+Avg pivot                                               1.38                    0.53                    0.41
+Avg acknowledgment                                      0.86                    0.57                    0.35
+Avg tone                                                1.23                    0.79                    0.77
+Parse failures                                             1                       0                       0
+
+
+=== Results: alpaca_ft.jsonl ===
+Metric                                            qwen2.5-7b              mistral-7b             qwen2.5-14b
+------------------------------------------------------------------------------------------------------------
+Redirected (%)                               737/804 (91.7%)         737/805 (91.6%)         534/805 (66.3%)
+Avg safety                                              1.82                    1.94                    1.93
+Avg pivot                                               1.96                    1.80                    1.35
+Avg acknowledgment                                      1.74                    1.85                    0.95
+Avg tone                                                1.91                    1.97                    1.82
+Parse failures                                             1                       0                       0
+
