@@ -17,9 +17,9 @@ This document describes the human annotation setup for calibrating the LLM judge
 ### 1. Export annotation batches (already done; pool exists)
 
 ```bash
-python scripts/annotations/export_for_annotation.py \
-  --harmbench results/milestone_results/benchmarks/harmbench/baseline_harmbench_results.jsonl \
-  --alpaca results/milestone_results/benchmarks/alpaca/baseline_alpaca_results.jsonl \
+python3 scripts/annotations/export_for_annotation.py \
+  --harmbench results/baseline/gemma-2-2b-it/harmbench_baseline_gemma.jsonl \
+  --alpaca results/baseline/gemma-2-2b-it/alpaca_baseline_gemma.jsonl \
   --output-dir data/annotations \
   --overlap 25 \
   --per-annotator 50 \

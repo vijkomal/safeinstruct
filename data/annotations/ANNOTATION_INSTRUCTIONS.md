@@ -1,6 +1,6 @@
 # Manual Voting — Human Annotation for Judge Calibration
 
-**Goal:** Each of you (Tim, Komal, J) rates ~50 examples. We use this to calibrate our LLM judges and report inter-annotator reliability in the paper.
+**Goal:** Each of us (Tim, Komal, J) rates ~50 examples. We use this to calibrate our LLM judges and report inter-annotator reliability in the paper.
 
 ---
 
@@ -58,16 +58,17 @@ This outputs:
 If the annotation pool is empty or you want to regenerate from different results:
 
 ```bash
-python scripts/annotations/export_for_annotation.py \
-  --harmbench results/milestone_results/benchmarks/harmbench/baseline_harmbench_results.jsonl \
-  --alpaca results/milestone_results/benchmarks/alpaca/baseline_alpaca_results.jsonl \
+cd safeinstruct
+python3 scripts/annotations/export_for_annotation.py \
+  --harmbench results/baseline/gemma-2-2b-it/harmbench_baseline_gemma.jsonl \
+  --alpaca results/baseline/gemma-2-2b-it/alpaca_baseline_gemma.jsonl \
   --output-dir data/annotations \
   --overlap 25 \
   --per-annotator 50 \
   --annotators tim komal j
 ```
 
-**Note:** Current results from `run_eval_modal.py` (GPT-Neo, TinyLlama) use a different format (rubric scores, not usefulness). The export script expects `usefulness` 1–5. Use the milestone Gemma baseline files above, or we can add conversion for the new format later.
+**Source:** Gemma-2-2B-it baseline on HarmBench and Alpaca. The export script supports both `usefulness` 1–5 and rubric format (`rubric_scores`, `successful_redirection`); rubric scores are converted to usefulness for stratification.
 
 ---
 
