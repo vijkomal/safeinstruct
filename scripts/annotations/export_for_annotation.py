@@ -56,13 +56,13 @@ def main():
     parser = argparse.ArgumentParser(description="Export examples for human annotation")
     parser.add_argument(
         "--harmbench",
-        default="results/benchmarks/harmbench/baseline_harmbench_results.jsonl",
-        help="HarmBench results JSONL",
+        default="results/milestone_results/benchmarks/harmbench/baseline_harmbench_results.jsonl",
+        help="HarmBench results JSONL (must have 'usefulness' 1-5 and 'model_response')",
     )
     parser.add_argument(
         "--alpaca",
-        default="results/benchmarks/alpaca/baseline_alpaca_results.jsonl",
-        help="Alpaca results JSONL",
+        default="results/milestone_results/benchmarks/alpaca/baseline_alpaca_results.jsonl",
+        help="Alpaca results JSONL (must have 'usefulness' 1-5 and 'model_response')",
     )
     parser.add_argument(
         "--output-dir",

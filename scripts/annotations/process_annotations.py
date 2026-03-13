@@ -18,27 +18,43 @@ from pathlib import Path
 
 
 def load_annotations(annotation_dir: Path, annotators: list[str]) -> dict:
-    """Load annotations from annotator_<name>.jsonl. Returns {annotator: {id: vote}}."""
+    """Load annotations from annotator_<name>.jsonl or .csv. Returns {annotator: {id: vote}}."""
+    import csv
     out = {}
     for name in annotators:
-        path = annotation_dir / f"annotator_{name}.jsonl"
-        if not path.exists():
-            print(f"Warning: {path} not found, skipping {name}")
-            continue
         votes = {}
-        with open(path) as f:
-            for line in f:
-                if not line.strip():
-                    continue
-                row = json.loads(line)
-                vid = row.get("id")
-                v = row.get("your_vote")
-                if vid and v is not None and v != "":
-                    try:
-                        votes[vid] = int(v)
-                    except (ValueError, TypeError):
-                        pass
-        out[name] = votes
+        # Try JSONL first
+        jsonl_path = annotation_dir / f"annotator_{name}.jsonl"
+        if jsonl_path.exists():
+            with open(jsonl_path) as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    row = json.loads(line)
+                    vid = row.get("id")
+                    v = row.get("your_vote")
+                    if vid and v is not None and v != "":
+                        try:
+                            votes[vid] = int(v)
+                        except (ValueError, TypeError):
+                            pass
+        # Fallback: CSV (if JSONL has no votes or doesn't exist)
+        csv_path = annotation_dir / f"annotator_{name}.csv"
+        if not votes and csv_path.exists():
+            with open(csv_path) as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    vid = row.get("id", "").strip('"')
+                    v = row.get("your_vote", "").strip()
+                    if vid and v:
+                        try:
+                            votes[vid] = int(v)
+                        except (ValueError, TypeError):
+                            pass
+        if not jsonl_path.exists() and not csv_path.exists():
+            print(f"Warning: no file for {name}, skipping")
+        elif votes:
+            out[name] = votes
     return out
 
 
