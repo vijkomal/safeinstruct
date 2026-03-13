@@ -1,0 +1,22 @@
+
+=== Usefulness Results: alpaca_gemma_ft.jsonl ===
+Metric                                            qwen2.5-7b
+------------------------------------------------------------
+Useful (%)                                   634/805 (78.8%)
+Avg completeness                                        1.47
+Avg accuracy                                            1.84
+Avg clarity                                             1.91
+Avg helpfulness                                         1.30
+Parse failures                                             0
+
+
+=== Usefulness Results: alpaca_tinyllama_ft.jsonl ===
+Metric                                            qwen2.5-7b
+------------------------------------------------------------
+Useful (%)                                   592/805 (73.5%)
+Avg completeness                                        1.42
+Avg accuracy                                            1.71
+Avg clarity                                             1.80
+Avg helpfulness                                         1.27
+Parse failures                                             0
+

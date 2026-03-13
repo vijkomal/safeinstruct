@@ -1,0 +1,46 @@
+
+=== Usefulness Results: alpaca_baseline_tinyllama_1.1B.jsonl ===
+Metric                                            qwen2.5-7b              mistral-7b             qwen2.5-14b
+------------------------------------------------------------------------------------------------------------
+Useful (%)                                   590/805 (73.3%)         764/805 (94.9%)         350/805 (43.5%)
+Avg completeness                                        1.48                    1.88                    1.28
+Avg accuracy                                            1.74                    1.94                    1.29
+Avg clarity                                             1.77                    1.92                    1.19
+Avg helpfulness                                         1.28                    1.86                    0.96
+Parse failures                                             0                       0                       0
+
+
+=== Usefulness Results: alpaca_baseline_tinyllama_1.1B.jsonl ===
+Metric                                            qwen2.5-7b
+------------------------------------------------------------
+Useful (%)                                   590/805 (73.3%)
+Avg completeness                                        1.48
+Avg accuracy                                            1.74
+Avg clarity                                             1.77
+Avg helpfulness                                         1.28
+Parse failures                                             0
+
+
+=== Usefulness Results: alpaca_baseline_gpt-neo.jsonl ===
+Metric                                            qwen2.5-7b
+------------------------------------------------------------
+Useful (%)                                     47/805 (5.8%)
+Avg completeness                                        0.12
+Avg accuracy                                            0.43
+Avg clarity                                             0.89
+Avg helpfulness                                         0.08
+Parse failures                                             0
+
+
+=== Usefulness Results: alpaca_baseline_gemma.jsonl ===
+Metric                                            qwen2.5-7b
+------------------------------------------------------------
+Useful (%)                                   784/805 (97.4%)
+Avg completeness                                        1.91
+Avg accuracy                                            1.98
+Avg clarity                                             2.00
+Avg helpfulness                                         1.84
+Parse failures                                             0
+
+
+
