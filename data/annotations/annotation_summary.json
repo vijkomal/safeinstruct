@@ -1,0 +1,26 @@
+{
+  "krippendorff_alpha": null,
+  "overlap_n": 0,
+  "annotator_judge_agreement": {
+    "tim": {
+      "exact": 0.0,
+      "within_1": 0.0,
+      "n": 0
+    },
+    "komal": {
+      "exact": 0.0,
+      "within_1": 0.0,
+      "n": 0
+    },
+    "j": {
+      "exact": 0.0,
+      "within_1": 0.0,
+      "n": 0
+    }
+  },
+  "calibration": {
+    "mean_annotator_judge_agreement": 0.0,
+    "calibration_weight": 0.0
+  },
+  "weighted_human_scores": {}
+}
