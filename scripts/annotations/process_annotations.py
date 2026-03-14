@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """
-Process human annotations: Krippendorff's alpha, judge agreement, weighted scoring.
+Process human annotations: inter-annotator agreement + judge calibration.
 
-- Krippendorff's alpha: inter-annotator agreement on overlap set
-- Per-annotator agreement with judge: used as weights
-- Weighted usefulness: when aggregating, weight by judge agreement
-  (annotators who agree more with judge get higher weight when we use judge scores)
+Direct rating mode: annotators rate each response 1-5. We compute:
+- Krippendorff's alpha: inter-annotator agreement on human ratings
+- Judge calibration: correlation of human rating with each judge's score (which judge aligns best with humans)
 
 Usage:
   pip install krippendorff
@@ -17,13 +16,25 @@ import argparse
 from pathlib import Path
 
 
-def load_annotations(annotation_dir: Path, annotators: list[str]) -> dict:
-    """Load annotations from annotator_<name>.jsonl or .csv. Returns {annotator: {id: vote}}."""
+def _parse_vote(v) -> int | None:
+    if v is None or v == "":
+        return None
+    try:
+        x = int(v) if isinstance(v, str) else int(v)
+        return x if 1 <= x <= 5 else None
+    except (ValueError, TypeError):
+        return None
+
+
+def load_annotations(
+    annotation_dir: Path, annotators: list[str], rating_key: str = "your_rating"
+) -> dict:
+    """Load annotations. Returns {annotator: {id: rating}} where rating is 1-5."""
     import csv
     out = {}
+
     for name in annotators:
         votes = {}
-        # Try JSONL first
         jsonl_path = annotation_dir / f"annotator_{name}.jsonl"
         if jsonl_path.exists():
             with open(jsonl_path) as f:
@@ -32,25 +43,22 @@ def load_annotations(annotation_dir: Path, annotators: list[str]) -> dict:
                         continue
                     row = json.loads(line)
                     vid = row.get("id")
-                    v = row.get("your_vote")
-                    if vid and v is not None and v != "":
-                        try:
-                            votes[vid] = int(v)
-                        except (ValueError, TypeError):
-                            pass
-        # Fallback: CSV (if JSONL has no votes or doesn't exist)
+                    if not vid:
+                        continue
+                    v = _parse_vote(row.get(rating_key))
+                    if v is not None:
+                        votes[vid] = v
         csv_path = annotation_dir / f"annotator_{name}.csv"
         if not votes and csv_path.exists():
             with open(csv_path) as f:
                 reader = csv.DictReader(f)
                 for row in reader:
                     vid = row.get("id", "").strip('"')
-                    v = row.get("your_vote", "").strip()
-                    if vid and v:
-                        try:
-                            votes[vid] = int(v)
-                        except (ValueError, TypeError):
-                            pass
+                    if not vid:
+                        continue
+                    v = _parse_vote(row.get(rating_key, "").strip())
+                    if v is not None:
+                        votes[vid] = v
         if not jsonl_path.exists() and not csv_path.exists():
             print(f"Warning: no file for {name}, skipping")
         elif votes:
@@ -58,33 +66,11 @@ def load_annotations(annotation_dir: Path, annotators: list[str]) -> dict:
     return out
 
 
-def load_pool(annotation_dir: Path) -> dict:
-    """Load annotation pool for judge scores. Returns {id: judge_usefulness}."""
-    path = annotation_dir / "annotation_pool.jsonl"
-    if not path.exists():
-        return {}
-    out = {}
-    with open(path) as f:
-        for line in f:
-            if not line.strip():
-                continue
-            row = json.loads(line)
-            vid = row.get("id")
-            j = row.get("judge_usefulness")
-            if vid and j is not None and 1 <= j <= 5:
-                out[vid] = int(j)
-    return out
-
-
 def krippendorff_alpha_matrix(annotations: dict, example_ids: list) -> float:
-    """
-    Compute Krippendorff's alpha on overlap examples.
-    reliability_data[coder_idx][unit_idx] = rating or nan
-    """
+    """Compute Krippendorff's alpha on human ratings. reliability_data[coder][unit] = rating or nan."""
     try:
         import krippendorff
     except ImportError:
-        # Fallback: pairwise percent agreement (not alpha, but indicative)
         return _fallback_agreement(annotations, example_ids)
 
     annotator_names = list(annotations.keys())
@@ -97,7 +83,11 @@ def krippendorff_alpha_matrix(annotations: dict, example_ids: list) -> float:
         votes = annotations[name]
         for eid in example_ids:
             if eid in votes:
-                mat[c][id_to_col[eid]] = float(votes[eid])
+                v = votes[eid]
+                if isinstance(v, (int, float)):
+                    mat[c][id_to_col[eid]] = float(v)
+                elif isinstance(v, tuple) and len(v) > 0 and v[0] is not None:
+                    mat[c][id_to_col[eid]] = float(v[0])
 
     alpha = krippendorff.alpha(
         reliability_data=mat,
@@ -114,7 +104,11 @@ def _fallback_agreement(annotations: dict, example_ids: list) -> float:
     pairs = 0
     agreed = 0
     for eid in example_ids:
-        vals = [annotations[n].get(eid) for n in names]
+        vals = []
+        for n in names:
+            v = annotations[n].get(eid)
+            if v is not None:
+                vals.append(v if isinstance(v, (int, float)) else v[0] if isinstance(v, tuple) else None)
         vals = [v for v in vals if v is not None]
         if len(vals) < 2:
             continue
@@ -126,77 +120,21 @@ def _fallback_agreement(annotations: dict, example_ids: list) -> float:
     return agreed / pairs if pairs > 0 else float("nan")
 
 
-def agreement_with_judge(annotations: dict, judge_scores: dict) -> dict[str, float]:
-    """Per-annotator agreement with judge: % exact match (and optionally within ±1)."""
-    out = {}
-    for name, votes in annotations.items():
-        matches_exact = 0
-        matches_near = 0
-        n = 0
-        for eid, human_v in votes.items():
-            judge_v = judge_scores.get(eid)
-            if judge_v is None or judge_v < 1 or judge_v > 5:
-                continue
-            n += 1
-            if human_v == judge_v:
-                matches_exact += 1
-            if abs(human_v - judge_v) <= 1:
-                matches_near += 1
-        if n > 0:
-            out[name] = {
-                "exact": matches_exact / n,
-                "within_1": matches_near / n,
-                "n": n,
-            }
-        else:
-            out[name] = {"exact": 0.0, "within_1": 0.0, "n": 0}
-    return out
-
-
-def weighted_human_score_per_example(
-    annotations: dict, annotator_agreement: dict, example_ids: list
-) -> dict[str, float]:
-    """
-    For each example, compute weighted average of human votes, weighted by
-    annotator–judge agreement. Annotators who agree more with the judge get higher weight.
-    """
-    out = {}
-    for eid in example_ids:
-        votes = []
-        weights = []
-        for name, avotes in annotations.items():
-            if eid not in avotes:
-                continue
-            agg = annotator_agreement.get(name, {})
-            w = agg.get("exact", 0.5)  # fallback 0.5 if missing
-            votes.append(avotes[eid])
-            weights.append(w)
-        if votes:
-            total_w = sum(weights)
-            if total_w > 0:
-                out[eid] = sum(v * w for v, w in zip(votes, weights)) / total_w
-            else:
-                out[eid] = sum(votes) / len(votes)
-    return out
-
-
-def weighted_judge_score(judge_scores: dict, annotator_agreement: dict) -> dict:
-    """
-    Compute calibration metrics: mean annotator–judge agreement.
-    Use when reporting judge-weighted usefulness in the paper.
-    """
-    if not annotator_agreement:
-        return {}
-
-    mean_exact = sum(a["exact"] for a in annotator_agreement.values()) / len(annotator_agreement)
-    return {
-        "mean_annotator_judge_agreement": mean_exact,
-        "calibration_weight": mean_exact,
-    }
+def _pearson_corr(x: list[float], y: list[float]) -> float:
+    """Pearson correlation. Returns nan if insufficient data."""
+    n = len(x)
+    if n < 3:
+        return float("nan")
+    mx, my = sum(x) / n, sum(y) / n
+    sx = sum((a - mx) ** 2 for a in x) ** 0.5
+    sy = sum((b - my) ** 2 for b in y) ** 0.5
+    if sx == 0 or sy == 0:
+        return float("nan")
+    return sum((a - mx) * (b - my) for a, b in zip(x, y)) / (sx * sy)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Process human annotations")
+    parser = argparse.ArgumentParser(description="Process human annotations (direct rating + judge calibration)")
     parser.add_argument(
         "--annotation-dir",
         default="data/annotations",
@@ -210,12 +148,7 @@ def main():
     )
     parser.add_argument(
         "--overlap-ids",
-        help="Optional: path to file with overlap example IDs (one per line). If not set, inferred from first annotator's in_overlap=True.",
-    )
-    parser.add_argument(
-        "--agreement-mode",
-        action="store_true",
-        help="Annotators rated agreement (1-5) with judge, not usefulness. Report mean agreement instead of agreement-with-judge.",
+        help="Optional: path to file with overlap example IDs (one per line).",
     )
     args = parser.parse_args()
 
@@ -229,13 +162,12 @@ def main():
         return
 
     annotations = load_annotations(ann_dir, args.annotators)
-    judge_scores = load_pool(ann_dir)
 
     if not annotations:
         print("No annotations found.")
         return
 
-    # Infer overlap IDs from first annotator file (examples with in_overlap=True)
+    # Infer overlap IDs from first annotator file
     overlap_ids = []
     for name in args.annotators:
         path = ann_dir / f"annotator_{name}.jsonl"
@@ -248,7 +180,7 @@ def main():
                     if row.get("in_overlap"):
                         overlap_ids.append(row["id"])
             break
-    overlap_ids = list(dict.fromkeys(overlap_ids))  # dedup preserve order
+    overlap_ids = list(dict.fromkeys(overlap_ids))
 
     if args.overlap_ids:
         overlap_path = Path(args.overlap_ids)
@@ -257,25 +189,27 @@ def main():
         if overlap_path.exists():
             overlap_ids = [x.strip() for x in open(overlap_path) if x.strip()]
 
-    # Filter to examples that have at least 2 annotations (for Krippendorff)
     overlap_with_votes = [
         eid for eid in overlap_ids
         if sum(1 for a in annotations.values() if eid in a) >= 2
     ]
 
     print("=" * 60)
-    print("HUMAN ANNOTATION ANALYSIS")
+    print("HUMAN ANNOTATION ANALYSIS (Direct Rating)")
     print("=" * 60)
 
-    # Krippendorff (or fallback pairwise agreement)
+    # Krippendorff on human ratings
     try:
         import krippendorff as _k
         alpha_label = "Krippendorff's alpha"
     except ImportError:
         alpha_label = "Pairwise agreement (install krippendorff for Krippendorff's alpha)"
+
+    alphas = {}
     if len(overlap_with_votes) >= 5:
         alpha = krippendorff_alpha_matrix(annotations, overlap_with_votes)
-        print(f"\n{alpha_label} (ordinal, overlap n={len(overlap_with_votes)}): {alpha:.3f}")
+        alphas["human_ratings"] = alpha
+        print(f"\n{alpha_label} (human ratings, n={len(overlap_with_votes)}): {alpha:.3f}")
         try:
             import krippendorff
             if alpha < 0.2:
@@ -289,56 +223,69 @@ def main():
             else:
                 print("  → Near-perfect agreement")
         except ImportError:
-            print("  (interpretation applies to Krippendorff's alpha; pairwise % differs)")
+            pass
     else:
         print(f"\nKrippendorff: skipped (need ≥5 overlap examples with ≥2 votes, got {len(overlap_with_votes)})")
 
-    agg = None
-    cal = None
-    weighted_scores = {}
+    # Mean rating per annotator
+    agg = {}
+    print("\n--- Mean rating per annotator (1-5 scale) ---")
+    for name, votes in annotations.items():
+        vals = [v for v in votes.values() if isinstance(v, (int, float)) and 1 <= v <= 5]
+        mean_r = sum(vals) / len(vals) if vals else float("nan")
+        agg[name] = {"mean_rating": mean_r, "n": len(vals)}
+        print(f"  {name}: mean={mean_r:.2f} (n={len(vals)})")
+    all_vals = [v for votes in annotations.values() for v in votes.values() if isinstance(v, (int, float)) and 1 <= v <= 5]
+    if all_vals:
+        print(f"\nOverall mean rating: {sum(all_vals)/len(all_vals):.2f}")
 
-    if args.agreement_mode:
-        # Agreement mode: annotators rated 1-5 how much they agree with judge
-        print("\n--- Mean agreement score per annotator (1-5 scale) ---")
-        agg = {}
-        for name, votes in annotations.items():
-            vals = [v for v in votes.values() if 1 <= v <= 5]
-            mean_agr = sum(vals) / len(vals) if vals else float("nan")
-            agg[name] = {"mean_agreement": mean_agr, "n": len(vals)}
-            print(f"  {name}: mean={mean_agr:.2f} (n={len(vals)})")
-        all_vals = [v for votes in annotations.values() for v in votes.values() if 1 <= v <= 5]
-        if all_vals:
-            print(f"\nOverall mean agreement: {sum(all_vals)/len(all_vals):.2f}")
-    else:
-        # Usefulness mode: compare annotator votes to judge
-        print("\n--- Per-annotator agreement with judge ---")
-        agg = agreement_with_judge(annotations, judge_scores)
-        for name, stats in agg.items():
-            print(f"  {name}: exact={stats['exact']:.2%}, within±1={stats['within_1']:.2%} (n={stats['n']})")
-
-        # Weighted calibration
-        cal = weighted_judge_score(judge_scores, agg)
-        if cal and "mean_annotator_judge_agreement" in cal:
-            print(f"\nMean annotator–judge agreement: {cal['mean_annotator_judge_agreement']:.2%}")
-            print("Use this as calibration weight when reporting judge-weighted usefulness.")
-
-        # Weighted human scores (for annotated examples)
-        all_annotated_ids = set()
-        for v in annotations.values():
-            all_annotated_ids.update(v.keys())
-        weighted_scores = weighted_human_score_per_example(annotations, agg, list(all_annotated_ids))
-        if weighted_scores:
-            avg_weighted = sum(weighted_scores.values()) / len(weighted_scores)
-            print(f"\nWeighted human score (avg over {len(weighted_scores)} annotated): {avg_weighted:.2f}")
+    # Judge calibration: correlate human rating with each judge's score
+    # Note: judge order is shuffled per example, so we use judge_mapping to get model per position
+    pool_path = ann_dir / "annotation_pool.jsonl"
+    judge_mapping_path = ann_dir / "judge_mapping.json"
+    judge_keys = ["judge_1_usefulness", "judge_2_usefulness", "judge_3_usefulness"]
+    if pool_path.exists() and judge_mapping_path.exists():
+        pool = {}
+        with open(pool_path) as f:
+            for line in f:
+                if line.strip():
+                    r = json.loads(line)
+                    pool[r["id"]] = r
+        judge_mappings = json.loads(judge_mapping_path.read_text())
+        # Mean human rating per example (across annotators)
+        human_mean = {}
+        for eid in overlap_with_votes:
+            vals = [annotations[n][eid] for n in annotations if eid in annotations[n] and isinstance(annotations[n][eid], (int, float))]
+            if len(vals) >= 1:
+                human_mean[eid] = sum(vals) / len(vals)
+        # Collect (human, judge_score) per model (judge position varies per example)
+        by_model = {}
+        for eid in overlap_with_votes:
+            if eid not in human_mean or eid not in pool or eid not in judge_mappings:
+                continue
+            p = pool[eid]
+            mapping = judge_mappings[eid]
+            for j, key in enumerate(judge_keys):
+                model_name = mapping.get(str(j + 1), f"Judge{j+1}")
+                jv = p.get(key)
+                if jv is not None and isinstance(jv, (int, float)) and 1 <= jv <= 5:
+                    if model_name not in by_model:
+                        by_model[model_name] = ([], [])
+                    by_model[model_name][0].append(human_mean[eid])
+                    by_model[model_name][1].append(float(jv))
+        print("\n--- Judge calibration (correlation with human rating) ---")
+        calibration = {}
+        for model_name, (h_vals, j_vals) in by_model.items():
+            r = _pearson_corr(h_vals, j_vals)
+            calibration[model_name] = {"correlation": r, "n": len(h_vals)}
+            print(f"  {model_name}: r={r:.3f} (n={len(h_vals)})")
+        agg["judge_calibration"] = calibration
 
     # Save summary
     summary = {
-        "krippendorff_alpha": krippendorff_alpha_matrix(annotations, overlap_with_votes) if len(overlap_with_votes) >= 5 else None,
+        "krippendorff_alpha": alphas if alphas else None,
         "overlap_n": len(overlap_with_votes),
-        "agreement_mode": args.agreement_mode,
-        "annotator_judge_agreement": agg,
-        "calibration": cal,
-        "weighted_human_scores": {k: round(v, 2) for k, v in weighted_scores.items()} if weighted_scores else {},
+        "mean_rating_per_annotator": agg,
     }
     summary_path = ann_dir / "annotation_summary.json"
     with open(summary_path, "w") as f:

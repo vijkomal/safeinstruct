@@ -1,36 +1,11 @@
 {
-  "krippendorff_alpha": 1.0,
-  "overlap_n": 30,
-  "agreement_mode": true,
-  "three_judges": true,
-  "annotator_judge_agreement": {
-    "tim": {
-      "mean_agreement": 4.0,
-      "n": 30
-    },
-    "komal": {
-      "mean_agreement": 4.0,
-      "n": 30
-    },
+  "krippendorff_alpha": null,
+  "overlap_n": 0,
+  "mean_rating_per_annotator": {
     "j": {
-      "mean_agreement": 4.0,
-      "n": 30
-    }
-  },
-  "per_judge_agreement": {
-    "Qwen2.5-14B": {
-      "mean_agreement": 4.1,
-      "n": 30
+      "mean_rating": 4.0,
+      "n": 1
     },
-    "Mistral-7B": {
-      "mean_agreement": 3.6,
-      "n": 30
-    },
-    "Qwen2.5-7B": {
-      "mean_agreement": 4.3,
-      "n": 30
-    }
-  },
-  "calibration": null,
-  "weighted_human_scores": {}
+    "judge_calibration": {}
+  }
 }
