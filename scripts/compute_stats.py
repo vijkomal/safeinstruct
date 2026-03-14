@@ -2,11 +2,17 @@ import json
 import os
 import glob
 
-JUDGES = [
-    ("rubric_scores",   "successful_redirection",   "Qwen2.5-7B  (J1)"),
-    # _2 is skipped (mR3-Qwen3, all parse failures)
-    ("rubric_scores_3", "successful_redirection_3", "Mistral-7B  (J3)"),
-    ("rubric_scores_4", "successful_redirection_4", "Qwen2.5-14B (J4)"),
+# Standard schema (Gemma, TinyLlama): rubric_scores, rubric_scores_3, rubric_scores_4
+JUDGES_STANDARD = [
+    ("rubric_scores",   "successful_redirection",   "Qwen2.5-7B  (J1)", "rubric_scores"),
+    ("rubric_scores_3", "successful_redirection_3", "Mistral-7B  (J3)", "rubric_scores_3"),
+    ("rubric_scores_4", "successful_redirection_4", "Qwen2.5-14B (J4)", "rubric_scores_4"),
+]
+# GPT-Neo uses model-specific keys; map to standard for aggregate
+JUDGES_GPTNEO = [
+    ("rubric_scores_qwen2.5-7b",   "successful_redirection_qwen2.5-7b",   "Qwen2.5-7B  (J1)", "rubric_scores"),
+    ("rubric_scores_mistral-7b",   "successful_redirection_mistral-7b",   "Mistral-7B  (J3)", "rubric_scores_3"),
+    ("rubric_scores_qwen2.5-14b", "successful_redirection_qwen2.5-14b", "Qwen2.5-14B (J4)", "rubric_scores_4"),
 ]
 
 INPUT_PATHS = [
@@ -62,7 +68,7 @@ def print_table(title, rows_by_judge):
         print(line)
 
 # ── Per-file tables ────────────────────────────────────────────────────────
-all_data_by_judge = {sk: [] for sk, _, _ in JUDGES}
+all_data_by_judge = {sk: [] for sk, _, _, _ in JUDGES_STANDARD}
 
 for path in INPUT_PATHS:
     if not os.path.exists(path):
@@ -75,20 +81,34 @@ for path in INPUT_PATHS:
             if line.strip():
                 data.append(json.loads(line))
 
+    # GPT-Neo uses different schema
+    judges = JUDGES_GPTNEO if "gpt-neo" in path else JUDGES_STANDARD
+
     rows = []
-    for scores_key, redir_key, label in JUDGES:
+    for judge_tuple in judges:
+        scores_key = judge_tuple[0]
+        redir_key = judge_tuple[1]
+        label = judge_tuple[2]
+        agg_key = judge_tuple[3] if len(judge_tuple) > 3 else scores_key
         s = compute_stats(data, scores_key, redir_key)
         rows.append((label, s))
-        if s:
-            all_data_by_judge[scores_key].extend(
-                [r for r in data if r.get(scores_key, [-1])[0] != -1]
-            )
+        if s and agg_key in all_data_by_judge:
+            valid_rows = [r for r in data if r.get(scores_key, [-1])[0] != -1]
+            # Normalize GPT-Neo rows to standard keys for aggregate
+            if "gpt-neo" in path:
+                std_scores = {"rubric_scores": "rubric_scores", "rubric_scores_3": "rubric_scores_3", "rubric_scores_4": "rubric_scores_4"}
+                std_redir = {"rubric_scores": "successful_redirection", "rubric_scores_3": "successful_redirection_3", "rubric_scores_4": "successful_redirection_4"}
+                valid_rows = [
+                    {**r, std_scores[agg_key]: r[scores_key], std_redir[agg_key]: r[redir_key]}
+                    for r in valid_rows
+                ]
+            all_data_by_judge[agg_key].extend(valid_rows)
 
     print_table(os.path.basename(path), rows)
 
 # ── Overall aggregate table ────────────────────────────────────────────────
 overall_rows = []
-for scores_key, redir_key, label in JUDGES:
+for scores_key, redir_key, label, _ in JUDGES_STANDARD:
     combined = all_data_by_judge[scores_key]
     if not combined:
         overall_rows.append((label, None))

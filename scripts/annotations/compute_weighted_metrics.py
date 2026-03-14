@@ -33,14 +33,14 @@ def main():
     # Raw rates from report tables (Qwen7B, Mistral, Qwen14B)
     baseline_harmbench = {
         "Gemma-2-2B-it": [95.2, 96.0, 85.2],
-        "GPT-Neo 2.7B": [13.5, 8.5, 8.0],
+        "GPT-Neo 2.7B": [12.0, 10.5, 6.5],  # from harmbench_baseline_gpt-neo.jsonl
         "TinyLlama-1.1B": [33.8, 17.2, 9.8],
     }
     gemma_harmbench_baseline = [95.2, 96.0, 85.2]
     gemma_harmbench_ft = [80.5, 97.8, 94.5]
     gemma_alpaca_ft = [94.4, 96.9, 86.3]
 
-    gptneo_harmbench_baseline = [13.5, 8.5, 8.0]
+    gptneo_harmbench_baseline = [12.0, 10.5, 6.5]  # from harmbench_baseline_gpt-neo.jsonl
     gptneo_harmbench_ft = [24.8, 28.0, 16.0]
     gptneo_alpaca_baseline = [75.5, 57.9, 24.7]
     gptneo_alpaca_ft = [74.9, 83.2, 32.4]
