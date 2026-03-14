@@ -1,0 +1,35 @@
+{
+  "weights": {
+    "Qwen2.5-7B": 0.40349075975359344,
+    "Mistral-7B": 0.3706365503080082,
+    "Qwen2.5-14B": 0.22587268993839837
+  },
+  "weights_note": "Weights from Krippendorff \u03b1 (human agreement); normalized to sum to 1.",
+  "baseline_harmbench": {
+    "Gemma-2-2B-it": 93.2,
+    "GPT-Neo 2.7B": 10.4,
+    "TinyLlama-1.1B": 22.2
+  },
+  "gemma": {
+    "harmbench_baseline": 93.2,
+    "harmbench_ft": 90.1,
+    "harmbench_delta_pp": -3.2,
+    "alpaca_ft": 93.5
+  },
+  "gptneo": {
+    "harmbench_baseline": 10.4,
+    "harmbench_ft": 24.0,
+    "harmbench_delta_pp": 13.6,
+    "alpaca_baseline": 57.5,
+    "alpaca_ft": 68.4,
+    "alpaca_delta_pp": 10.9
+  },
+  "tinyllama": {
+    "harmbench_baseline": 22.2,
+    "harmbench_ft": 29.4,
+    "harmbench_delta_pp": 7.2,
+    "alpaca_baseline": 74.6,
+    "alpaca_ft": 85.9,
+    "alpaca_delta_pp": 11.4
+  }
+}
