@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Process human annotations: inter-annotator agreement + judge calibration.
+Process human annotations: 3-judge agreement mode.
 
-Direct rating mode: annotators rate each response 1-5. We compute:
-- Krippendorff's alpha: inter-annotator agreement on human ratings
-- Judge calibration: correlation of human rating with each judge's score (which judge aligns best with humans)
+Annotators rate agreement (1-5) with each of 3 judges. We compute:
+- Krippendorff's alpha: inter-annotator agreement per judge
+- Mean agreement per annotator and per LLM judge
 
 Usage:
   pip install krippendorff
@@ -27,11 +27,12 @@ def _parse_vote(v) -> int | None:
 
 
 def load_annotations(
-    annotation_dir: Path, annotators: list[str], rating_key: str = "your_rating"
+    annotation_dir: Path, annotators: list[str], three_judges: bool = True
 ) -> dict:
-    """Load annotations. Returns {annotator: {id: rating}} where rating is 1-5."""
+    """Load annotations. Returns {annotator: {id: (v1,v2,v3)}} for 3-judge mode."""
     import csv
     out = {}
+    vote_keys = ["your_vote_1", "your_vote_2", "your_vote_3"] if three_judges else ["your_rating"]
 
     for name in annotators:
         votes = {}
@@ -45,9 +46,14 @@ def load_annotations(
                     vid = row.get("id")
                     if not vid:
                         continue
-                    v = _parse_vote(row.get(rating_key))
-                    if v is not None:
-                        votes[vid] = v
+                    if three_judges:
+                        vals = tuple(_parse_vote(row.get(k)) for k in vote_keys)
+                        if any(v is not None for v in vals):
+                            votes[vid] = vals
+                    else:
+                        v = _parse_vote(row.get("your_rating"))
+                        if v is not None:
+                            votes[vid] = v
         csv_path = annotation_dir / f"annotator_{name}.csv"
         if not votes and csv_path.exists():
             with open(csv_path) as f:
@@ -56,9 +62,14 @@ def load_annotations(
                     vid = row.get("id", "").strip('"')
                     if not vid:
                         continue
-                    v = _parse_vote(row.get(rating_key, "").strip())
-                    if v is not None:
-                        votes[vid] = v
+                    if three_judges:
+                        vals = tuple(_parse_vote(row.get(k, "").strip()) for k in vote_keys)
+                        if any(v is not None for v in vals):
+                            votes[vid] = vals
+                    else:
+                        v = _parse_vote(row.get("your_rating", "").strip())
+                        if v is not None:
+                            votes[vid] = v
         if not jsonl_path.exists() and not csv_path.exists():
             print(f"Warning: no file for {name}, skipping")
         elif votes:
@@ -66,21 +77,38 @@ def load_annotations(
     return out
 
 
-def krippendorff_alpha_matrix(annotations: dict, example_ids: list) -> float:
-    """Compute Krippendorff's alpha on human ratings. reliability_data[coder][unit] = rating or nan."""
+def _extract_votes_for_judge(annotations: dict, example_ids: list, judge_idx: int) -> dict:
+    """Extract single vote per annotator per example for a given judge (0, 1, or 2)."""
+    out = {}
+    for name, votes in annotations.items():
+        out[name] = {}
+        for eid in example_ids:
+            v = votes.get(eid)
+            if v is not None and isinstance(v, tuple) and judge_idx < len(v) and v[judge_idx] is not None:
+                out[name][eid] = v[judge_idx]
+            elif v is not None and not isinstance(v, tuple) and judge_idx == 0:
+                out[name][eid] = v
+        if out[name]:
+            out[name] = {k: v for k, v in out[name].items() if v is not None}
+    return {n: v for n, v in out.items() if v}
+
+
+def krippendorff_alpha_matrix(annotations: dict, example_ids: list, judge_idx: int | None = None) -> float:
+    """Compute Krippendorff's alpha. For 3-judge mode, pass judge_idx 0/1/2."""
     try:
         import krippendorff
     except ImportError:
-        return _fallback_agreement(annotations, example_ids)
+        return _fallback_agreement(annotations, example_ids, judge_idx)
 
-    annotator_names = list(annotations.keys())
+    ann = _extract_votes_for_judge(annotations, example_ids, judge_idx) if judge_idx is not None else annotations
+    annotator_names = list(ann.keys())
     n_coders = len(annotator_names)
     n_units = len(example_ids)
     id_to_col = {eid: i for i, eid in enumerate(example_ids)}
 
     mat = [[float("nan")] * n_units for _ in range(n_coders)]
     for c, name in enumerate(annotator_names):
-        votes = annotations[name]
+        votes = ann[name]
         for eid in example_ids:
             if eid in votes:
                 v = votes[eid]
@@ -96,9 +124,10 @@ def krippendorff_alpha_matrix(annotations: dict, example_ids: list) -> float:
     return alpha
 
 
-def _fallback_agreement(annotations: dict, example_ids: list) -> float:
+def _fallback_agreement(annotations: dict, example_ids: list, judge_idx: int | None = None) -> float:
     """Simple pairwise agreement when krippendorff not installed."""
-    names = list(annotations.keys())
+    ann = _extract_votes_for_judge(annotations, example_ids, judge_idx) if judge_idx is not None else annotations
+    names = list(ann.keys())
     if len(names) < 2:
         return float("nan")
     pairs = 0
@@ -106,7 +135,7 @@ def _fallback_agreement(annotations: dict, example_ids: list) -> float:
     for eid in example_ids:
         vals = []
         for n in names:
-            v = annotations[n].get(eid)
+            v = ann[n].get(eid)
             if v is not None:
                 vals.append(v if isinstance(v, (int, float)) else v[0] if isinstance(v, tuple) else None)
         vals = [v for v in vals if v is not None]
@@ -161,7 +190,7 @@ def main():
         print(f"Annotation dir not found: {ann_dir}")
         return
 
-    annotations = load_annotations(ann_dir, args.annotators)
+    annotations = load_annotations(ann_dir, args.annotators, three_judges=True)
 
     if not annotations:
         print("No annotations found.")
@@ -195,10 +224,10 @@ def main():
     ]
 
     print("=" * 60)
-    print("HUMAN ANNOTATION ANALYSIS (Direct Rating)")
+    print("HUMAN ANNOTATION ANALYSIS (3-Judge Agreement)")
     print("=" * 60)
 
-    # Krippendorff on human ratings
+    # Krippendorff per judge
     try:
         import krippendorff as _k
         alpha_label = "Krippendorff's alpha"
@@ -207,85 +236,67 @@ def main():
 
     alphas = {}
     if len(overlap_with_votes) >= 5:
-        alpha = krippendorff_alpha_matrix(annotations, overlap_with_votes)
-        alphas["human_ratings"] = alpha
-        print(f"\n{alpha_label} (human ratings, n={len(overlap_with_votes)}): {alpha:.3f}")
-        try:
-            import krippendorff
-            if alpha < 0.2:
-                print("  → Slight agreement")
-            elif alpha < 0.4:
-                print("  → Fair agreement")
-            elif alpha < 0.6:
-                print("  → Moderate agreement")
-            elif alpha < 0.8:
-                print("  → Substantial agreement")
-            else:
-                print("  → Near-perfect agreement")
-        except ImportError:
-            pass
+        for j in range(3):
+            alpha = krippendorff_alpha_matrix(annotations, overlap_with_votes, judge_idx=j)
+            alphas[f"Judge_{j+1}"] = alpha
+            print(f"\n{alpha_label} (Judge {j+1}, n={len(overlap_with_votes)}): {alpha:.3f}")
+            try:
+                import krippendorff
+                if alpha < 0.2:
+                    print("  → Slight agreement")
+                elif alpha < 0.4:
+                    print("  → Fair agreement")
+                elif alpha < 0.6:
+                    print("  → Moderate agreement")
+                elif alpha < 0.8:
+                    print("  → Substantial agreement")
+                else:
+                    print("  → Near-perfect agreement")
+            except ImportError:
+                pass
     else:
         print(f"\nKrippendorff: skipped (need ≥5 overlap examples with ≥2 votes, got {len(overlap_with_votes)})")
 
-    # Mean rating per annotator
+    # Mean agreement per annotator
     agg = {}
-    print("\n--- Mean rating per annotator (1-5 scale) ---")
+    print("\n--- Mean agreement per annotator (1-5 scale) ---")
     for name, votes in annotations.items():
-        vals = [v for v in votes.values() if isinstance(v, (int, float)) and 1 <= v <= 5]
-        mean_r = sum(vals) / len(vals) if vals else float("nan")
-        agg[name] = {"mean_rating": mean_r, "n": len(vals)}
-        print(f"  {name}: mean={mean_r:.2f} (n={len(vals)})")
-    all_vals = [v for votes in annotations.values() for v in votes.values() if isinstance(v, (int, float)) and 1 <= v <= 5]
+        vals = []
+        for v in votes.values():
+            if isinstance(v, tuple):
+                vals.extend(x for x in v if x is not None and 1 <= x <= 5)
+            elif isinstance(v, (int, float)) and 1 <= v <= 5:
+                vals.append(v)
+        mean_agr = sum(vals) / len(vals) if vals else float("nan")
+        agg[name] = {"mean_agreement": mean_agr, "n": len(vals)}
+        print(f"  {name}: mean={mean_agr:.2f} (n={len(vals)})")
+    all_vals = []
+    for votes in annotations.values():
+        for v in votes.values():
+            if isinstance(v, tuple):
+                all_vals.extend(x for x in v if x is not None and 1 <= x <= 5)
+            elif isinstance(v, (int, float)) and 1 <= v <= 5:
+                all_vals.append(v)
     if all_vals:
-        print(f"\nOverall mean rating: {sum(all_vals)/len(all_vals):.2f}")
+        print(f"\nOverall mean agreement: {sum(all_vals)/len(all_vals):.2f}")
 
-    # Judge calibration: correlate human rating with each judge's score
-    # Note: judge order is shuffled per example, so we use judge_mapping to get model per position
-    pool_path = ann_dir / "annotation_pool.jsonl"
-    judge_mapping_path = ann_dir / "judge_mapping.json"
-    judge_keys = ["judge_1_usefulness", "judge_2_usefulness", "judge_3_usefulness"]
-    if pool_path.exists() and judge_mapping_path.exists():
-        pool = {}
-        with open(pool_path) as f:
-            for line in f:
-                if line.strip():
-                    r = json.loads(line)
-                    pool[r["id"]] = r
-        judge_mappings = json.loads(judge_mapping_path.read_text())
-        # Mean human rating per example (across annotators)
-        human_mean = {}
-        for eid in overlap_with_votes:
-            vals = [annotations[n][eid] for n in annotations if eid in annotations[n] and isinstance(annotations[n][eid], (int, float))]
-            if len(vals) >= 1:
-                human_mean[eid] = sum(vals) / len(vals)
-        # Collect (human, judge_score) per model (judge position varies per example)
-        by_model = {}
-        for eid in overlap_with_votes:
-            if eid not in human_mean or eid not in pool or eid not in judge_mappings:
-                continue
-            p = pool[eid]
-            mapping = judge_mappings[eid]
-            for j, key in enumerate(judge_keys):
-                model_name = mapping.get(str(j + 1), f"Judge{j+1}")
-                jv = p.get(key)
-                if jv is not None and isinstance(jv, (int, float)) and 1 <= jv <= 5:
-                    if model_name not in by_model:
-                        by_model[model_name] = ([], [])
-                    by_model[model_name][0].append(human_mean[eid])
-                    by_model[model_name][1].append(float(jv))
-        print("\n--- Judge calibration (correlation with human rating) ---")
-        calibration = {}
-        for model_name, (h_vals, j_vals) in by_model.items():
-            r = _pearson_corr(h_vals, j_vals)
-            calibration[model_name] = {"correlation": r, "n": len(h_vals)}
-            print(f"  {model_name}: r={r:.3f} (n={len(h_vals)})")
-        agg["judge_calibration"] = calibration
+    # Mean agreement per judge position (Judge 1/2/3; identity varies per example)
+    all_example_ids = list(set().union(*(set(a.keys()) for a in annotations.values())))
+    print("\n--- Mean agreement per judge position ---")
+    for j in range(3):
+        ann_j = _extract_votes_for_judge(annotations, all_example_ids, j)
+        vals = []
+        for v in ann_j.values():
+            vals.extend(x for x in v.values() if x is not None and 1 <= x <= 5)
+        mean_j = sum(vals) / len(vals) if vals else float("nan")
+        agg[f"judge_{j+1}"] = {"mean_agreement": mean_j, "n": len(vals)}
+        print(f"  Judge {j+1}: mean={mean_j:.2f} (n={len(vals)})")
 
     # Save summary
     summary = {
         "krippendorff_alpha": alphas if alphas else None,
         "overlap_n": len(overlap_with_votes),
-        "mean_rating_per_annotator": agg,
+        "mean_agreement_per_annotator": agg,
     }
     summary_path = ann_dir / "annotation_summary.json"
     with open(summary_path, "w") as f:
