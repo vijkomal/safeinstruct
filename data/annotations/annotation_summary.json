@@ -1,26 +1,36 @@
 {
-  "krippendorff_alpha": null,
-  "overlap_n": 0,
+  "krippendorff_alpha": 1.0,
+  "overlap_n": 30,
+  "agreement_mode": true,
+  "three_judges": true,
   "annotator_judge_agreement": {
     "tim": {
-      "exact": 0.0,
-      "within_1": 0.0,
-      "n": 0
+      "mean_agreement": 4.0,
+      "n": 30
     },
     "komal": {
-      "exact": 0.0,
-      "within_1": 0.0,
-      "n": 0
+      "mean_agreement": 4.0,
+      "n": 30
     },
     "j": {
-      "exact": 0.0,
-      "within_1": 0.0,
-      "n": 0
+      "mean_agreement": 4.0,
+      "n": 30
     }
   },
-  "calibration": {
-    "mean_annotator_judge_agreement": 0.0,
-    "calibration_weight": 0.0
+  "per_judge_agreement": {
+    "Qwen2.5-14B": {
+      "mean_agreement": 4.1,
+      "n": 30
+    },
+    "Mistral-7B": {
+      "mean_agreement": 3.6,
+      "n": 30
+    },
+    "Qwen2.5-7B": {
+      "mean_agreement": 4.3,
+      "n": 30
+    }
   },
+  "calibration": null,
   "weighted_human_scores": {}
 }

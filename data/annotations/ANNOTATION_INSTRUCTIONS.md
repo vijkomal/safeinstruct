@@ -1,10 +1,22 @@
 # Manual Voting — Human Annotation for Judge Calibration
 
-**Goal:** Each of us (Tim, Komal, J) rates ~50 examples. We use this to calibrate our LLM judges and report inter-annotator reliability in the paper.
+**Goal:** Each annotator (Tim, Komal, J) rates examples. We use this to calibrate our LLM judges and report inter-annotator reliability in the paper.
 
 ---
 
-## What You Need to Do
+## Models & Data Sources
+
+| Model | Baseline | Finetuned (FT) |
+|-------|----------|----------------|
+| **Gemma-2-2B** | `results/baseline/gemma-2-2b-it/` | `results/harmbench_gemma_ft.jsonl`, `results/alpaca_gemma_ft.jsonl` |
+| **TinyLlama-1.1B** | `results/baseline/tiny-llama-1.1b/` | `results/harmbench_tinyllama_ft.jsonl`, `results/alpaca_tinyllama_ft.jsonl` |
+| **GPT-Neo-2.7B** | `results/baseline/gpt-neo/` | `results/ft/gpt-neo/` |
+
+All examples are scored by 3 judges: **Qwen2.5-7B**, **Mistral-7B**, **Qwen2.5-14B**. Judge identity is hidden during annotation.
+
+---
+
+## 3-Judge Mode — What You Need to Do
 
 ### 1. Open your file
 
@@ -12,78 +24,94 @@
 - **Komal:** `data/annotations/annotator_komal.jsonl` or `annotator_komal.csv`
 - **J:** `data/annotations/annotator_j.jsonl` or `annotator_j.csv`
 
-Use the **CSV** if you prefer spreadsheets (Excel, Google Sheets). Use the **JSONL** if you prefer a text editor.
+### 2. Rate each of the 3 judges per example
 
-### 2. Rate each example
-
-For each row, fill in **`your_vote`** with a number **1–5** indicating **how much you agree with the judge's rating**:
+For each row, fill in **`your_vote_1`**, **`your_vote_2`**, **`your_vote_3`** (1–5 each):
 
 | Score | Meaning |
 |-------|---------|
-| **1** | Strongly disagree with the judge |
+| **1** | Strongly disagree with this judge |
 | **2** | Disagree |
 | **3** | Neutral / somewhat agree |
 | **4** | Agree |
-| **5** | Strongly agree with the judge |
+| **5** | Strongly agree with this judge |
 
-**What to do:** Read the prompt, the model's response, and the **`judge_usefulness`** score (1–5). Then rate how much you agree with that judge score. You're voting on agreement, not re-rating usefulness.
+**What to do:** Read the prompt and model response. You see 3 judge scores (Judge 1, Judge 2, Judge 3). Judge identity is **hidden**—you don't know which LLM (Qwen7, Mistral, Qwen14) produced which score. Rate how much you agree with each judge's score separately.
 
-**Note:** Examples are randomly sampled from **all 3 models** (Gemma, GPT-Neo, TinyLlama) to avoid confounding. The `model` column (in JSONL) indicates which model produced each response.
-
-### 3. Save and run the processing script
-
-After everyone has filled in their votes:
+### 3. Save and run
 
 ```bash
 cd safeinstruct
-conda activate safeinstruct
-pip install krippendorff   # optional, for Krippendorff's alpha
-python scripts/annotations/process_annotations.py --annotation-dir data/annotations --agreement-mode
+python scripts/annotations/process_annotations.py --annotation-dir data/annotations
 ```
 
-This outputs:
-- **Krippendorff's alpha** (inter-annotator agreement on agreement ratings)
-- **Mean agreement score** per annotator
+Outputs: Krippendorff's alpha, mean agreement per annotator, **mean agreement per LLM judge** (Judge 1/2/3 → Qwen7/Mistral/Qwen14 from `judge_mapping.json`).
 
 ---
 
-## File Details
-
-- **25 overlap examples:** Everyone annotates these (for reliability).
-- **25 unique per person:** Only you annotate these.
-- **~50 total per person.**
-
----
-
-## If You Need to Re-Export (Optional)
-
-If the annotation pool is empty or you want to regenerate from different results:
-
-**Mix from all 3 models** (recommended — avoids confounding):
+## Exporting the Annotation Pool
 
 ```bash
 cd safeinstruct
-python3 scripts/annotations/export_for_annotation.py --mix-models \
-  --output-dir data/annotations \
-  --overlap 25 --per-annotator 50 --annotators tim komal j
 ```
 
-**Single model** (e.g. Gemma only):
-
+**Option A: Baseline only (10 per model)**  
+Gemma, TinyLlama, GPT-Neo baselines:
 ```bash
-python3 scripts/annotations/export_for_annotation.py \
-  --harmbench results/baseline/gemma-2-2b-it/harmbench_baseline_gemma.jsonl \
-  --alpaca results/baseline/gemma-2-2b-it/alpaca_baseline_gemma.jsonl \
-  --output-dir data/annotations
+python scripts/annotations/export_for_annotation.py --mix-models --n-per-model 10
 ```
 
-**Source:** With `--mix-models`, randomly samples from Gemma-2-2B, GPT-Neo-2.7B, and TinyLlama-1.1B baselines. Supports both `usefulness` 1–5 and rubric format (`rubric_scores`, `successful_redirection`).
+**Option B: Baseline + FT (10 per model per variant)**  
+Full structure: 60 examples (10 × 3 models × 2 variants):
+```bash
+python scripts/annotations/export_for_annotation.py --mix-models --include-ft --n-per-model 10
+```
+
+**Option C: FT only (recommended for calibration)**  
+30 examples (10 per model) — avoids GPT-Neo baseline whitespace/repetition; all responses have substantive content:
+```bash
+python scripts/annotations/export_for_annotation.py --mix-models --ft-only --n-per-model 10
+```
+
+**Option C': FT only, exclude GPT-Neo**  
+20 examples (10 per model × Gemma + TinyLlama):
+```bash
+python scripts/annotations/export_for_annotation.py --mix-models --ft-only --exclude-gptneo --n-per-model 10
+```
+
+**Option D: Custom sources**  
+Use specific files with all 3 judges (overrides --mix-models):
+```bash
+python scripts/annotations/export_for_annotation.py \
+  --three-judge-sources results/baseline/alpaca-results-baseline.jsonl --n-per-model 10
+```
+
+**Source:** All 3 judges must have scored each example. Judge identity stored in `judge_mapping.json` (internal only).
 
 ---
 
-## Checklist
+## File Structure
 
-- [ ] Tim: Fill `your_vote` (1–5 agreement) for all 50 examples in `annotator_tim.jsonl` or `.csv`
-- [ ] Komal: Fill `your_vote` (1–5 agreement) for all 50 examples in `annotator_komal.jsonl` or `.csv`
-- [ ] J: Fill `your_vote` (1–5 agreement) for all 50 examples in `annotator_j.jsonl` or `.csv`
-- [ ] Run `process_annotations.py` and share `annotation_summary.json` for the paper
+```
+data/annotations/
+├── ANNOTATION_INSTRUCTIONS.md   # This file
+├── README.md                    # Quick task for annotators
+├── annotation_pool.jsonl        # All examples (no judge identity)
+├── judge_mapping.json           # Internal: Judge 1/2/3 → Qwen7/Mistral/Qwen14
+├── annotator_tim.jsonl          # Tim's batch
+├── annotator_tim.csv
+├── annotator_komal.jsonl
+├── annotator_komal.csv
+├── annotator_j.jsonl
+├── annotator_j.csv
+└── annotation_summary.json      # Output after process_annotations.py
+```
+
+---
+
+## Checklist (3-judge mode)
+
+- [ ] Tim: Fill `your_vote_1`, `your_vote_2`, `your_vote_3` for all examples
+- [ ] Komal: Fill `your_vote_1`, `your_vote_2`, `your_vote_3` for all examples
+- [ ] J: Fill `your_vote_1`, `your_vote_2`, `your_vote_3` for all examples
+- [ ] Run `process_annotations.py --annotation-dir data/annotations` and share `annotation_summary.json`

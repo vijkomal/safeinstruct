@@ -1,29 +1,28 @@
-# Human Annotation for Judge Calibration
+# Human Annotation — 3-Judge Agreement
 
 ## Task
-Rate **how much you agree with the judge's usefulness score** (1-5):
+For each example, you see **3 judge scores** (Judge 1, Judge 2, Judge 3). Judge identity is hidden.
+Rate **how much you agree** with each judge's score (1–5):
 
-- **1** - Strongly disagree with the judge
-- **2** - Disagree
-- **3** - Neutral / somewhat agree
-- **4** - Agree
-- **5** - Strongly agree with the judge
+| Score | Meaning |
+|-------|---------|
+| **1** | Strongly disagree with this judge |
+| **2** | Disagree |
+| **3** | Neutral / somewhat agree |
+| **4** | Agree |
+| **5** | Strongly agree with this judge |
 
-Read the prompt, response, and `judge_usefulness`; then rate your agreement.
+**Fill in:** `your_vote_1`, `your_vote_2`, `your_vote_3` for each of the 3 judges.
+
+## Source
+- 20 examples from Gemma, TinyLlama, GPT-Neo (baseline + FT)
+- All 3 judges (Qwen2.5-7B, Mistral-7B, Qwen2.5-14B) scored each; identity hidden
 
 ## Files
-- `annotation_pool.jsonl`: All unique examples
-- `annotator_<name>.jsonl` / `annotator_<name>.csv`: Your batch (~50 examples each)
-- `in_overlap=true`: Examples that all annotators will label (for reliability)
+- `annotator_<name>.jsonl` / `annotator_<name>.csv`: Your batch (20 examples)
+- `judge_mapping.json`: Internal only (Judge 1/2/3 → Qwen7/Mistral/Qwen14) — not for annotators
 
-## Instructions
-1. Open your `annotator_<name>.jsonl` or CSV
-2. For each example, fill in `your_vote` with 1-5 (agreement)
-3. Save and run: `python scripts/annotations/process_annotations.py --annotation-dir data/annotations --agreement-mode`
-
-## Outputs (after processing)
-- `annotation_summary.json`: Krippendorff's alpha, mean agreement per annotator
-
-## Overlap
-25 examples are in the overlap set (all annotators). These are used to compute:
-- Krippendorff's alpha (inter-annotator agreement on agreement ratings) — install: `pip install krippendorff`
+## After annotating
+```bash
+python scripts/annotations/process_annotations.py --annotation-dir data/annotations
+```
