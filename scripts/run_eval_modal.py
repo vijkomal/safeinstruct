@@ -603,16 +603,23 @@ def rejudge(
 
 # ── Entrypoint: OR-Bench-Hard-1K (generate only, refusal rate) ──────────────
 
+CHECKPOINT_VOLUME_PATH = "checkpoints/generator_single_layer_ft"
+
+
 @app.local_entrypoint()
 def orbench(
     input_path:   str = "data/benchmarks/orbench/orbench_hard_1k.jsonl",
     output_dir:   str = "results/orbench",
     model:        str = "base",       # "base" or "ft"
     base_model:   str = "",           # e.g. EleutherAI/gpt-neo-2.7B, TinyLlama/TinyLlama-1.1B-Chat-v1.0
-    ft_model_path: str = "",          # LoRA path when model=ft
+    ft_model_path: str = "",          # LoRA path when model=ft (on Modal volume)
+    ft_checkpoint_local: str = "",    # Local checkpoint dir; mounts and uses instead of volume
     limit:        int = 0,
 ):
     """Run OR-Bench-Hard-1K: generate responses, compute over-refusal rate (no judges).
+
+    Use --ft-checkpoint-local /path/to/checkpoint to mount a local LoRA checkpoint
+    instead of loading from Modal volume.
 
     Lower refusal rate on safe prompts = better. Run for each model variant:
       modal run run_eval_modal.py::orbench --model base --base-model google/gemma-2-2b-it
@@ -624,6 +631,25 @@ def orbench(
     """
     base_model_id = base_model.strip() or BASE_MODEL_ID
     ft_path = ft_model_path.strip() or os.environ.get("FT_MODEL_PATH", FT_MODEL_PATH)
+    use_local = ft_checkpoint_local.strip()
+    if use_local:
+        if model != "ft":
+            raise ValueError("--ft-checkpoint-local requires --model ft")
+        local_path = os.path.abspath(os.path.expanduser(use_local))
+        if not os.path.isdir(local_path):
+            raise FileNotFoundError(f"Local checkpoint dir not found: {local_path}")
+        print(f"Uploading local checkpoint to Modal volume: {local_path} -> {CHECKPOINT_VOLUME_PATH}")
+        import subprocess
+        r = subprocess.run(
+            ["modal", "volume", "put", "safeinstruct-results", local_path, CHECKPOINT_VOLUME_PATH, "--force"],
+            capture_output=True,
+            text=True,
+        )
+        if r.returncode != 0:
+            raise RuntimeError(f"modal volume put failed: {r.stderr or r.stdout}")
+        ft_path = f"/root/results/{CHECKPOINT_VOLUME_PATH}"
+        print(f"Uploaded. Using checkpoint at {ft_path}")
+
     slug = model_slug(base_model_id)
     suffix = "ft" if model == "ft" else "base"
     out_name = f"orbench_hard_1k_{slug}_{suffix}.jsonl"
@@ -650,6 +676,7 @@ def orbench(
         gen_kw["base_model_id"] = base_model_id
     if model == "ft" and ft_path:
         gen_kw["ft_model_path"] = ft_path
+
     data = [item for chunk in generate.map(chunks, kwargs=gen_kw) for item in chunk]
 
     # Refusal detection (local)

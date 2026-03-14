@@ -1,0 +1,4 @@
+orbench_hard_1k_gemma-2-2b_base.jsonl: 727/1319 (55.1%)
+orbench_hard_1k_gpt-neo-2.7b_base.jsonl: 63/1319 (4.8%)
+orbench_hard_1k_gemma-2b_ft.jsonl: 741/1319 (56.2%)
+orbench_hard_1k_gpt-neo-2.7b_ft.jsonl: 45/1319 (3.4%)
