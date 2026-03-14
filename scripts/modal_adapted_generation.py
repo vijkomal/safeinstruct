@@ -545,6 +545,11 @@ def generate_json_pairs_for_seed(
         input_len = inputs["input_ids"].shape[1]
         num_raw_generations += 1
         text = tokenizer.decode(output[input_len:], skip_special_tokens=True).strip()
+        # Non-chat models (e.g. GPT-Neo) may output Gemma tokens as literal text; strip them
+        if not getattr(tokenizer, "chat_template", None):
+            for tok in ("<start_of_turn>", "<end_of_turn>", "start_of_turn", "end_of_turn"):
+                text = text.replace(tok, "")
+            text = text.strip()
         if use_grammar_constraint and text and not text.lstrip().startswith("{"):
             print(f"[WARN] Grammar constraint may not have applied: output does not start with {{ (got {repr(text[:50])}...)")
         if not text:

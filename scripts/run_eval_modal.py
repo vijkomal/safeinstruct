@@ -194,8 +194,8 @@ def generate(data: list, model: str = "gemma", batch_size: int = 4, max_new_toke
                 tokenize=False,
                 add_generation_prompt=True,
             )
-        else:
-            return f"<start_of_turn>user\n{prompt}<end_of_turn>\n<start_of_turn>model\n"
+        # Non-chat models (GPT-Neo, etc.): use generic format, not Gemma tokens
+        return f"User: {prompt}\nAssistant: "
 
     formatted = [format_prompt(item) for item in data]
     results = []
