@@ -3,6 +3,7 @@
 
 import contextlib
 import os
+import random
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -110,7 +111,7 @@ def main() -> None:
     ]
 
     n_val = max(0, int(len(examples) * val_ratio))
-    rng = __import__("random").Random(seed)
+    rng = random.Random(seed)
     rng.shuffle(examples)
     train_examples = examples[n_val:]
     val_examples = examples[:n_val]
@@ -169,7 +170,7 @@ def main() -> None:
 
     use_amp = (use_bf16 or use_fp16) and device == "cuda"
     amp_dtype = torch.bfloat16 if (use_bf16 and device == "cuda") else (torch.float16 if (use_fp16 and device == "cuda") else None)
-    scaler = torch.cuda.amp.GradScaler() if use_amp and use_fp16 else None  # bf16 doesn't need scaler
+    scaler = torch.cuda.amp.GradScaler() if use_amp and use_fp16 else None
 
     print(f"Model: {model_name}")
     print(f"Device: {device}")
@@ -280,12 +281,8 @@ def main() -> None:
             best_val_loss = val_loss
             patience_counter = 0
             os.makedirs(save_path, exist_ok=True)
-            if use_lora:
-                model.save_pretrained(save_path)
-                tokenizer.save_pretrained(save_path)
-            else:
-                model.save_pretrained(save_path)
-                tokenizer.save_pretrained(save_path)
+            model.save_pretrained(save_path)
+            tokenizer.save_pretrained(save_path)
             print(f"Saved best (val_loss={val_loss:.4f}) to: {save_path}")
         else:
             patience_counter += 1
@@ -295,14 +292,10 @@ def main() -> None:
             break
 
     os.makedirs(save_path, exist_ok=True)
-    if use_lora:
-        model.save_pretrained(save_path)
-        tokenizer.save_pretrained(save_path)
-        print(f"Saved final LoRA adapter to: {save_path}")
-    else:
-        model.save_pretrained(save_path)
-        tokenizer.save_pretrained(save_path)
-        print(f"Saved final model to: {save_path}")
+    model.save_pretrained(save_path)
+    tokenizer.save_pretrained(save_path)
+    final_label = "LoRA adapter" if use_lora else "model"
+    print(f"Saved final {final_label} to: {save_path}")
 
     if save_plots and train_losses:
         import matplotlib.pyplot as plt

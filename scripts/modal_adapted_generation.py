@@ -12,15 +12,11 @@ from typing import Any, Dict, List, Optional, Tuple
 import modal
 import torch
 
-# Ensure transformers is loaded before lm-format-enforcer (its integration imports from transformers)
 try:
     import transformers  # noqa: F401
 except ImportError:
     pass
 
-# --------------------------
-# Modal setup
-# --------------------------
 app = modal.App("safeinstruct-generation")
 
 MODEL_CACHE = "/root/model-cache"
@@ -75,57 +71,49 @@ image = (
     )
 )
 
-# --------------------------
-# ROOT path (safe for both local and remote)
-# --------------------------
 ROOT = Path("/root/safeinstruct") if os.path.exists("/root/safeinstruct") else Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-# --------------------------
-# Shared with run_generate_verify.py
-# --------------------------
-
 def build_generation_prompt(
     target_prompt: str,
-    seed_prompt_reference: str,
     seed_response: str,
     seed_reasoning: str | None = None,
-    persona: str | None = None,
-    seed_instruction: str | None = None,
     safety_principle: str | None = None,
     transformation_rule: str | None = None,
-    use_persona_context: bool = True,
-    use_instruction_context: bool = True,
     use_principle_context: bool = True,
     use_example: bool = False,
     second_example: tuple[str, str, str | None] | None = None,
-    use_template_format: bool = False,
 ) -> str:
-    """
-    OLD PROMPT (commented out for reference):
-    ---
+    """Build the generator prompt that requests strict JSON output.
+
+    TinyLlama legacy prompt (kept for reference; not active in current flow):
+    ------------------------------------------------------------------------
     if use_example:
-        ex = {"prompt": seed_prompt_reference, "response": seed_response}
-        if seed_reasoning: ex["reasoning"] = seed_reasoning
+        ex = {"prompt": "<seed_prompt_reference>", "response": seed_response}
+        if seed_reasoning:
+            ex["reasoning"] = seed_reasoning
         parts.append("Example:\n" + json.dumps(ex, ensure_ascii=False))
         if second_example:
             ex2_prompt, ex2_resp, ex2_reason = second_example
             ex2 = {"prompt": ex2_prompt, "response": ex2_resp}
-            if ex2_reason: ex2["reasoning"] = ex2_reason
+            if ex2_reason:
+                ex2["reasoning"] = ex2_reason
             parts.append(json.dumps(ex2, ensure_ascii=False))
         parts.append("")
-    ...
-    parts.append(f"Target: {target_prompt}\n\n"
-        "Reason and respond to the target above. Reason why the request is harmful, refuse that specific request, "
-        "then offer a safe alternative. Output JSON with response and reasoning:")
-    ---
+
+    parts.append(
+        f"Target: {target_prompt}\n\n"
+        "Reason and respond to the target above. Reason why the request is harmful, "
+        "refuse that specific request, then offer a safe alternative. "
+        "Output JSON with response and reasoning:"
+    )
     """
     parts: List[str] = []
     if use_example:
         ex: Dict[str, str] = {"response": seed_response, "reasoning": seed_reasoning or ""}
         parts.append("Example output:\n" + json.dumps(ex, ensure_ascii=False))
         if second_example:
-            ex2_prompt, ex2_resp, ex2_reason = second_example
+            _, ex2_resp, ex2_reason = second_example
             ex2: Dict[str, str] = {"response": ex2_resp, "reasoning": ex2_reason or ""}
             parts.append(json.dumps(ex2, ensure_ascii=False))
         parts.append("")
@@ -169,7 +157,6 @@ def load_text_model(
             bnb_4bit_compute_dtype=torch.float16,
             bnb_4bit_quant_type="nf4",
         )
-        # device_map="cuda:0" avoids accelerate's dispatch_model calling .to() which fails for 4-bit
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
             token=token,
@@ -313,7 +300,6 @@ def classify_principle_for_prompt(
     )[0]
     input_len = inputs["input_ids"].shape[1]
     text = tokenizer.decode(output[input_len:], skip_special_tokens=True).strip()
-    # Parse P1, P2, ... P15
     match = re.search(r"\b(P\d+)\b", text, re.IGNORECASE)
     if match and match.group(1).upper() in id_to_principle:
         return match.group(1).upper()
@@ -323,7 +309,6 @@ def classify_principle_for_prompt(
 def _extract_first_json_object(text: str) -> Optional[Dict[str, Any]]:
     """Extract first valid JSON object, handling markdown, preamble, single-quotes, arrays."""
     raw = text.strip()
-    # If wrapped in ```, take the part between code fences (often contains the JSON)
     if "```" in raw:
         parts = raw.split("```")
         for part in parts:
@@ -332,10 +317,8 @@ def _extract_first_json_object(text: str) -> Optional[Dict[str, Any]]:
                 if obj is not None:
                     return obj
         raw = "".join(p for p in parts if p.strip())  # fallback: concat non-empty
-    # Strip markdown remnants
     raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
     raw = re.sub(r"\s*```\s*$", "", raw)
-    # Drop everything before first { (removes preamble)
     start = raw.find("{")
     if start == -1:
         arr_start = raw.find("[{")
@@ -357,7 +340,6 @@ def _extract_first_json_object(text: str) -> Optional[Dict[str, Any]]:
                 pass
         return None
 
-    # Find matching } accounting for strings
     depth = 0
     i = 0
     in_string = False
@@ -394,13 +376,11 @@ def _extract_first_json_object(text: str) -> Optional[Dict[str, Any]]:
                     return obj
         i += 1
 
-    # Fallback: progressive truncation
     for end in range(len(raw), 0, -1):
         obj = _try_parse(raw[:end])
         if obj is not None:
             return obj
 
-    # Last resort: try ast.literal_eval for single-quoted Python dict
     try:
         import ast
         obj = ast.literal_eval(raw)
@@ -420,16 +400,11 @@ def write_jsonl(path: str, rows: List[Dict[str, Any]]) -> None:
             f.write(json.dumps(row, ensure_ascii=True) + "\n")
 
 
-# --------------------------
-# Generation + Verification
-# --------------------------
-
 def generate_json_pairs_for_seed(
     model: Any,
     tokenizer: Any,
     device: str,
     target_prompt: str,
-    seed_prompt_reference: str,
     seed_response: str,
     num_candidates_per_seed: int,
     max_new_tokens: int,
@@ -438,16 +413,11 @@ def generate_json_pairs_for_seed(
     repetition_penalty: float = 1.0,
     no_repeat_ngram_size: int = 0,
     seed_reasoning: str | None = None,
-    seed_instruction: str = None,
     safety_principle: str = None,
     transformation_rule: str = None,
-    persona: str = None,
-    use_persona_context: bool = True,
-    use_instruction_context: bool = True,
     use_principle_context: bool = True,
     use_example: bool = False,
     second_example: tuple[str, str, str | None] | None = None,
-    use_template_format: bool = False,
     generation_seed: int | None = None,
     seed_idx: int = 0,
     parse_failures_out: Optional[List[Dict[str, Any]]] = None,
@@ -466,28 +436,21 @@ def generate_json_pairs_for_seed(
             parse_failures_out.append({
                 "target_prompt": target_prompt,
                 "reason": reason,
-                "raw_output": raw_text[:2000] if raw_text else "",  # truncate for readability
+                "raw_output": raw_text[:2000] if raw_text else "",
                 "parsed": parsed,
             })
 
     for i in range(n):
         model_prompt = build_generation_prompt(
             target_prompt=target_prompt,
-            seed_prompt_reference=seed_prompt_reference,
             seed_response=seed_response,
             seed_reasoning=seed_reasoning,
-            persona=persona,
-            seed_instruction=seed_instruction,
             safety_principle=safety_principle,
             transformation_rule=transformation_rule,
-            use_persona_context=use_persona_context,
-            use_instruction_context=use_instruction_context,
             use_principle_context=use_principle_context,
             use_example=use_example,
             second_example=second_example,
-            use_template_format=use_template_format,
         )
-        # Instruction-tuned models (Gemma-it, TinyLlama-Chat) expect chat format
         if getattr(tokenizer, "chat_template", None):
             model_prompt = tokenizer.apply_chat_template(
                 [{"role": "user", "content": model_prompt}],
@@ -517,7 +480,6 @@ def generate_json_pairs_for_seed(
         )
         if no_repeat_ngram_size > 0:
             gen_kwargs["no_repeat_ngram_size"] = no_repeat_ngram_size
-        # Gemma + prefix_allowed_tokens_fn produces empty/wrong output; use unconstrained
         use_grammar = use_grammar_constraint and "gemma" not in (generator_name or "").lower()
         if use_grammar:
             try:
@@ -563,7 +525,6 @@ def generate_json_pairs_for_seed(
                 response = json.dumps(response).strip()
             if response and isinstance(response, str):
                 reasoning_str = (reasoning or "").strip() if isinstance(reasoning, str) else ""
-                # Reject placeholders and malformed content
                 placeholder_patterns = (
                     "[your prompt here]", "[your response here]", "[your reasoning here]",
                     "[insert reasoning here]", "[Insert reasoning here]",
@@ -594,7 +555,7 @@ def generate_json_pairs_for_seed(
                     _log_parse_failure("json_in_response_field", raw_text=text, parsed=obj)
                     num_parse_failures += 1
                     continue
-                if len(response) < 15:  # reject stub/empty-ish content
+                if len(response) < 15:
                     _log_parse_failure("length_too_short", raw_text=text, parsed=obj)
                     num_parse_failures += 1
                     continue
@@ -605,7 +566,7 @@ def generate_json_pairs_for_seed(
                     continue
                 pair["reasoning"] = reasoning_str
                 generated_pairs.append(pair)
-                break  # got valid pair; stop retrying
+                break
         _log_parse_failure("json_parse_failed" if obj is None else "missing_response_or_reasoning", raw_text=text, parsed=obj)
         num_parse_failures += 1
 
@@ -767,10 +728,6 @@ def verify_candidates_with_local_model(
     return results
 
 
-# --------------------------
-# Modal entrypoint: chunked processing
-# --------------------------
-
 CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", "50"))  # prompts per container
 
 
@@ -795,23 +752,25 @@ def process_chunk(chunk_id: int, target_prompts: List[str]):
     results_dir = "/root/results"
     chunk_prefix = f"{results_dir}/chunk_{chunk_id}"
     gen_path = f"{chunk_prefix}_generated.jsonl"
-    # Skip if already done (resume: delete chunk_N_*.jsonl to retry)
     existing = read_jsonl(gen_path)
-    if len(existing) >= len(target_prompts) * 0.95:  # allow ~5% parse failures
+    if len(existing) >= len(target_prompts) * 0.95:
         print(f"[CHUNK {chunk_id}] Already complete ({len(existing)}/{len(target_prompts)}), skipping")
         return
 
     token = os.getenv("HF_TOKEN")
     config_path = ROOT / "configs" / "default.yaml"
     config = load_config(str(config_path))
+    data_cfg = config.get("data", {})
+    model_cfg = config.get("model", {})
+    generation_cfg = config.get("generation", {})
     device = resolve_device()
     rng = random.Random(int(config.get("seed", 42)) + chunk_id * 1000)
 
-    generator_name = os.environ.get("GENERATOR_MODEL") or config["model"]["generator_name"]
+    generator_name = os.environ.get("GENERATOR_MODEL") or model_cfg["generator_name"]
     verifier_name = (
         os.environ.get("VERIFIER_MODEL")
         or (generator_name if os.environ.get("GENERATOR_MODEL") else None)
-        or config["model"].get("verifier_name")
+        or model_cfg.get("verifier_name")
         or generator_name
     )
 
@@ -819,7 +778,7 @@ def process_chunk(chunk_id: int, target_prompts: List[str]):
     if verifier_name != generator_name:
         ensure_model_cached(verifier_name, token=token)
 
-    load_in_4bit = bool(config.get("model", {}).get("load_in_4bit", False))
+    load_in_4bit = bool(model_cfg.get("load_in_4bit", False))
     model, tokenizer = load_text_model(
         generator_name, device, token=token, load_in_4bit=load_in_4bit
     )
@@ -830,35 +789,30 @@ def process_chunk(chunk_id: int, target_prompts: List[str]):
             verifier_name, device, token=token, load_in_4bit=load_in_4bit
         )
 
-    principles_path = config.get("data", {}).get("seed_principles_path", "data/seed_principles.json")
+    principles_path = data_cfg.get("seed_principles_path", "data/seed_principles.json")
     id_to_principle, id_to_rule, id_to_instantiations = load_principle_mapping(principles_path)
     if chunk_id == 0:
-        mapping_out = config.get("data", {}).get("principle_id_mapping_path", "data/principle_id_mapping.json")
+        mapping_out = data_cfg.get("principle_id_mapping_path", "data/principle_id_mapping.json")
         write_principle_id_mapping(id_to_principle, mapping_out)
 
     principle_ids = [p for p in id_to_principle.keys() if id_to_instantiations.get(p)]
 
-    use_persona_context = bool(config.get("generation", {}).get("use_persona_context", True))
-    use_instruction_context = bool(config.get("generation", {}).get("use_instruction_context", True))
-    use_principle_context = bool(config.get("generation", {}).get("use_principle_context", True))
-    use_example = bool(config.get("generation", {}).get("use_example", False))
-    use_two_examples = bool(config.get("generation", {}).get("use_two_examples", False))
-    use_template_format = bool(config.get("generation", {}).get("use_template_format", False))
-    personas: List[str] = config.get("generation", {}).get("personas") or []
-    num_candidates = int(config.get("generation", {}).get("num_candidates_per_seed", 3))
-    response_max_length = int(config.get("generation", {}).get("response_max_length", 800))
-    reasoning_max_length = int(config.get("generation", {}).get("reasoning_max_length", 500))
-    # Derive from schema limits: ~3 chars/token, +80 for JSON structure overhead
+    use_principle_context = bool(generation_cfg.get("use_principle_context", True))
+    use_example = bool(generation_cfg.get("use_example", False))
+    use_two_examples = bool(generation_cfg.get("use_two_examples", False))
+    num_candidates = int(generation_cfg.get("num_candidates_per_seed", 3))
+    response_max_length = int(generation_cfg.get("response_max_length", 800))
+    reasoning_max_length = int(generation_cfg.get("reasoning_max_length", 500))
     max_new_tokens = (response_max_length + reasoning_max_length + 80) // 3
-    temperature = float(config.get("generation", {}).get("temperature", 0.6))
-    top_p = float(config.get("generation", {}).get("top_p", 0.9))
-    repetition_penalty = float(config.get("generation", {}).get("repetition_penalty", 1.0))
-    no_repeat_ngram_size = int(config.get("generation", {}).get("no_repeat_ngram_size", 0))
-    verifier_max_new_tokens = int(config.get("generation", {}).get("verifier_max_new_tokens", 12))
-    verifier_batch_size = int(config.get("generation", {}).get("verifier_batch_size", 8))
-    verifier_unparsed_as_pass = bool(config.get("generation", {}).get("verifier_unparsed_as_pass", True))
-    verifier_lenient = bool(config.get("generation", {}).get("verifier_lenient", False))
-    use_grammar_constraint = bool(config.get("generation", {}).get("use_grammar_constraint", False))
+    temperature = float(generation_cfg.get("temperature", 0.6))
+    top_p = float(generation_cfg.get("top_p", 0.9))
+    repetition_penalty = float(generation_cfg.get("repetition_penalty", 1.0))
+    no_repeat_ngram_size = int(generation_cfg.get("no_repeat_ngram_size", 0))
+    verifier_max_new_tokens = int(generation_cfg.get("verifier_max_new_tokens", 12))
+    verifier_batch_size = int(generation_cfg.get("verifier_batch_size", 8))
+    verifier_unparsed_as_pass = bool(generation_cfg.get("verifier_unparsed_as_pass", True))
+    verifier_lenient = bool(generation_cfg.get("verifier_lenient", False))
+    use_grammar_constraint = bool(generation_cfg.get("use_grammar_constraint", False))
     if use_grammar_constraint:
         if _build_json_parser(response_max_length=response_max_length, reasoning_max_length=reasoning_max_length) is None:
             print("[WARN] use_grammar_constraint=True but lm-format-enforcer unavailable; disabling")
@@ -866,8 +820,7 @@ def process_chunk(chunk_id: int, target_prompts: List[str]):
         else:
             print("[INFO] Grammar-constrained decoding enabled (lm-format-enforcer generate_enforced)")
 
-    # Classify+sample for this chunk's prompts
-    generation_items: List[Tuple[str, str, str, str | None, str | None, str | None, str | None, tuple[str, str, str | None] | None]] = []
+    generation_items: List[Dict[str, Any]] = []
     for target_prompt in tqdm(target_prompts, desc=f"Chunk{chunk_id} classify", unit="prompt"):
         principle_id = classify_principle_for_prompt(
             model=model,
@@ -896,55 +849,42 @@ def process_chunk(chunk_id: int, target_prompts: List[str]):
                 second_ref.get("response", "").strip(),
                 second_ref.get("reasoning"),
             )
-        generation_items.append(
-            (
-                target_prompt,
-                ref.get("prompt", "").strip(),
-                ref.get("response", "").strip(),
-                None,
-                safety_principle,
-                transformation_rule,
-                ref.get("reasoning"),
-                second_example_tuple,
-            )
-        )
+        generation_items.append({
+            "target_prompt": target_prompt,
+            "seed_response": ref.get("response", "").strip(),
+            "safety_principle": safety_principle,
+            "transformation_rule": transformation_rule,
+            "seed_reasoning": ref.get("reasoning"),
+            "second_example": second_example_tuple,
+        })
 
     generated_rows: List[Dict[str, Any]] = []
     rejected_rows: List[Dict[str, Any]] = []
     verified_rows: List[Dict[str, Any]] = []
     parse_failures: List[Dict[str, Any]] = []
 
-    gen_seed_cfg = config.get("generation", {}).get("generation_seed")
+    gen_seed_cfg = generation_cfg.get("generation_seed")
     generation_seed = int(gen_seed_cfg) if isinstance(gen_seed_cfg, (int, float)) else None
 
-    for seed_idx, (target_prompt, seed_prompt_reference, seed_response, seed_instruction, safety_principle, transformation_rule, seed_reasoning, second_example_tuple) in enumerate(tqdm(
-        generation_items, desc=f"Chunk{chunk_id} seeds", unit="seed"
-    )):
-        persona = random.choice(personas) if (personas and config.get("generation", {}).get("persona", True)) else None
+    for seed_idx, item in enumerate(tqdm(generation_items, desc=f"Chunk{chunk_id} seeds", unit="seed")):
         generated_pairs, _, _ = generate_json_pairs_for_seed(
             model=model,
             tokenizer=tokenizer,
             device=device,
-            target_prompt=target_prompt,
-            seed_prompt_reference=seed_prompt_reference,
-            seed_response=seed_response,
+            target_prompt=item["target_prompt"],
+            seed_response=item["seed_response"],
             num_candidates_per_seed=num_candidates,
             max_new_tokens=max_new_tokens,
             temperature=temperature,
             top_p=top_p,
             repetition_penalty=repetition_penalty,
             no_repeat_ngram_size=no_repeat_ngram_size,
-            seed_reasoning=seed_reasoning,
-            seed_instruction=seed_instruction,
-            safety_principle=safety_principle,
-            transformation_rule=transformation_rule,
-            persona=persona,
-            use_persona_context=use_persona_context,
-            use_instruction_context=use_instruction_context,
+            seed_reasoning=item["seed_reasoning"],
+            safety_principle=item["safety_principle"],
+            transformation_rule=item["transformation_rule"],
             use_principle_context=use_principle_context,
             use_example=use_example,
-            second_example=second_example_tuple,
-            use_template_format=use_template_format,
+            second_example=item["second_example"],
             generation_seed=generation_seed,
             seed_idx=seed_idx,
             parse_failures_out=parse_failures,
@@ -1024,7 +964,6 @@ def merge_chunks(num_chunks: int):
     write_jsonl(f"{results_dir}/{os.path.basename(verified_path)}", verified_rows)
     write_jsonl(f"{results_dir}/{os.path.basename(parse_failures_path)}", parse_failures)
 
-    # Remove chunk files to avoid confusion on re-run
     for i in range(num_chunks):
         for suffix in ["_generated.jsonl", "_rejected.jsonl", "_verified.jsonl", "_parse_failures.jsonl"]:
             path = f"{results_dir}/chunk_{i}{suffix}"
@@ -1074,8 +1013,6 @@ def run():
         print("[INFO] No prompts to process")
         return
 
-    # Run chunks in parallel (Modal spawns multiple containers)
     list(process_chunk.starmap(chunks))
 
-    # Merge chunk outputs into final files
     merge_chunks.remote(len(chunks))
